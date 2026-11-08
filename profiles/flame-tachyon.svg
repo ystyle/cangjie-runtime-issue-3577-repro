@@ -1,0 +1,4544 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200.000000" height="486.000000" onload="init(evt)" viewBox="0 0 1200.000000 486.000000"
+    xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<defs>
+    <linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+        <stop stop-color="#eeeeee" offset="5%" />
+        <stop stop-color="#eeeeb0" offset="95%" />
+    </linearGradient>
+</defs>
+<style type="text/css">
+    text { font-family:Verdana; font-size:12.000000px; fill:rgb(0, 0, 0); }
+    #search, #ignorecase { opacity:0.1; cursor:pointer; }
+    #search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+    #title { text-anchor:middle; font-size:17.000000px}
+    #unzoom { cursor:pointer; }
+    #frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+    .hide { display:none; }
+    .parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+    "use strict";
+    var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+    function init(evt) {
+        details = document.getElementById("details").firstChild;
+        ignorecaseBtn = document.getElementById("ignorecase");
+        searchbtn = document.getElementById("search");
+        matchedtxt = document.getElementById("matched");
+        unzoombtn = document.getElementById("unzoom");
+        svg = document.getElementsByTagName("svg")[0];
+
+        // init flamegraph state
+        searching = 0;
+        currentSearchTerm = null;
+
+        // restore flamegraph state
+        var keyValues = get_params();
+        if (keyValues.x && keyValues.y) {
+            zoom(find_group(document.querySelector('[x="' + keyValues.x + '"][y="' + keyValues.y + '"]')));
+        }
+        if (keyValues.s) {
+            search(keyValues.s);
+        }
+    }
+
+    // add click event listener
+    window.addEventListener("click", function(e) {
+        var target = find_group(e.target);
+        if (target) {
+            if (target.nodeName == "a") {
+                if (e.ctrlKey === false) {
+                    return;
+                }
+                e.preventDefault();
+            }
+            if (target.classList.contains("parent")) {
+                unzoom(true);
+            }
+            zoom(target);
+            if (!document.querySelector(".parent")) {
+                var keyValues = get_params();
+                if (keyValues.x) {
+                    delete keyValues.x;
+                }
+                if (keyValues.y) {
+                    delete keyValues.y;
+                }
+                history.replaceState(null, null, parse_params(keyValues));
+                unzoombtn.classList.add("hide");
+                return;
+            }
+
+            var rect_ele = target.querySelector("rect");
+            if (rect_ele && rect_ele.attributes && rect_ele.attributes.y && rect_ele.attributes._orig_x) {
+                var keyValues = get_params();
+                keyValues.y = rect_ele.attributes.y.value;
+                keyValues.x = rect_ele.attributes._orig_x.value;
+                history.replaceState(null, null, parse_params(keyValues));
+            }
+        }
+        else if (e.target.id == "ignorecase") {
+            toggle_ignorecase();
+        }
+        else if (e.target.id == "unzoom") {
+            clearzoom();
+        }
+        else if (e.target.id == "search") {
+            search_prompt();
+        }
+    }, false)
+
+    // add mouseover event listener
+    window.addEventListener("mouseover", function(e) {
+        var target = find_group(e.target);
+        if (target) {
+            details.nodeValue = "Function: " + g_to_text(target);
+        }
+    }, false)
+
+    // add mouseout event listener
+    window.addEventListener("mouseout", function(e) {
+        var target = find_group(e.target);
+        if (target) {
+            details.nodeValue = ' ';
+        }
+    }, false)
+
+    // add keydown event listener
+    window.addEventListener("keydown", function(e) {
+        // open search prompt: Ctrl + F
+        if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+            e.preventDefault();
+            search_prompt();
+        }
+        // toggle ignore case for search: Ctrl + I
+        else if (e.ctrlKey && e.keyCode === 73) {
+            e.preventDefault();
+            toggle_ignorecase();
+        }
+    }, false)
+
+    // some functions
+    // get keyValues from url
+    function get_params() {
+        var keyValues = {};
+        var url_search = window.location.search;
+        var items_array = url_search.substr(1).split('&');
+        for (var i = 0; i < items_array.length; ++i) {
+            var keyValue = items_array[i].split("=");
+            if (!keyValue[0] || !keyValue[1]) {
+                continue;
+            }
+            keyValues[keyValue[0]] = decodeURIComponent(keyValue[1]);
+        }
+        return keyValues;
+    }
+
+    // build url forme keyValues
+    function parse_params(keyValues) {
+        var url_search = "?";
+        for (var key in keyValues) {
+            var keyValue = key + '=' + encodeURIComponent(keyValues[key]) + '&';
+            url_search += keyValue;
+        }
+        if (url_search.slice(-1) == "&") {
+            url_search = url_search.substring(0, url_search.length - 1);
+        }
+        if (url_search == '?') {
+            url_search = window.location.href.split('?')[0];
+        }
+        return url_search;
+    }
+
+    // find first child
+    function find_child(node, selector) {
+        var children = node.querySelectorAll(selector);
+        if (children.length > 0) {
+            return children[0];
+        }
+    }
+
+    function find_group(node) {
+        var parent = node.parentElement;
+        if (!parent) {
+            return;
+        }
+        if (parent.id == "frames") {
+            return node;
+        }
+        return find_group(parent);
+    }
+    
+    // save attr value
+    function orig_attr_save(e, attr, val) {
+        if (e.attributes[attr] == undefined) {
+            return;
+        }
+        var orig_attr_key = "_orig_" + attr;
+        if (e.attributes[orig_attr_key] != undefined) {
+            return;
+        }
+        if (val == undefined) {
+            val = e.attributes[attr].value;
+        }
+        e.setAttribute(orig_attr_key, val);
+    }
+
+    // load attr orig value
+    function orig_attr_load(e, attr) {
+        var orig_attr_key = "_orig_" + attr;
+        if (e.attributes[orig_attr_key] == undefined) {
+            return;
+        }
+        e.attributes[attr].value = e.attributes[orig_attr_key].value;
+        e.removeAttribute(orig_attr_key);
+    }
+
+    function g_to_text(e) {
+        var text = find_child(e, "title").firstChild.nodeValue;
+        return (text);
+    }
+    
+    function g_to_func(e) {
+        var func = g_to_text(e);
+        // process func
+        return (func);
+    }
+    
+    function update_text(e) {
+        var child_rect = find_child(e, "rect");
+        var child_text = find_child(e, "text");
+
+        // get available rect width
+        var w = parseFloat(child_rect.attributes.width.value) - 3;
+        
+        // get show txt
+        var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/, "");
+
+        child_text.attributes.x.value = parseFloat(child_rect.attributes.x.value) + 3;
+
+        // if w is too small, hide text
+        if (w < 2 * 0.590000 * 12.000000) {
+            child_text.textContent = "";
+            return;
+        }
+
+        child_text.textContent = txt;
+        
+        // if we can show entire txt with w or txt only has spaces
+        if (/^ *$/.test(txt)) {
+            return;
+        }
+
+        var sl = child_text.getSubStringLength(0, txt.length);
+        if (w > sl) {
+            return;
+        }
+
+        // compute show ratiom, show the longest txt
+        var start = Math.floor((w / sl) * txt.length);
+        for (var x = start; x > 0; x = x - 2) {
+            if (child_text.getSubStringLength(0, x + 2) <= w) {
+                child_text.textContent = txt.substring(0, x) + "..";
+                return;
+            }
+        }
+        child_text.textContent = "";
+    }
+    
+    // zoom
+    function zoom_reset(e) {
+        if (e.attributes != undefined) {
+            orig_attr_load(e, "x");
+            orig_attr_load(e, "width");
+        }
+        if (e.childNodes == undefined) {
+            return;
+        }
+        for (var i = 0, c = e.childNodes; i < c.length; ++i) {
+            zoom_reset(c[i]);
+        }
+    }
+
+    function zoom_child(e, x, ratio) {
+        if (e.attributes != undefined) {
+            if (e.attributes.width != undefined) {
+                orig_attr_save(e, "width");
+                e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+            }
+            if (e.attributes.x != undefined) {
+                orig_attr_save(e, "x");
+                e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10.000000) * ratio + 10.000000;
+                if (e.tagName == "text") {
+                    e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+                }
+            }
+        }
+
+        if (e.childNodes == undefined) {
+            return;
+        }
+        for (var i = 0, c = e.childNodes; i < c.length; ++i) {
+            zoom_child(c[i], x - 10.000000, ratio);
+        }
+    }
+
+    function zoom_parent(e) {
+        if (e.attributes) {
+            if (e.attributes.x != undefined) {
+                orig_attr_save(e, "x");
+                e.attributes.x.value = 10.000000;
+            }
+            if (e.attributes.width != undefined) {
+                orig_attr_save(e, "width");
+                e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10.000000 * 2);
+            }
+        }
+        if (e.childNodes == undefined) {
+            return;
+        }
+        for (var i = 0, childs = e.childNodes; i < childs.length; ++i) {
+            zoom_parent(childs[i]);
+        }
+    }
+
+    function zoom(node) {
+        var rect_attr = find_child(node, "rect").attributes;
+        var width = parseFloat(rect_attr.width.value);
+        var xmin = parseFloat(rect_attr.x.value);
+        var xmax = parseFloat(xmin + width);
+        var ymin = parseFloat(rect_attr.y.value);
+
+        // compute zoom ratio
+        var ratio = (svg.width.baseVal.value - 2 * 10.000000) / width;
+
+        var delta_float = 0.0001;
+
+        unzoombtn.classList.remove("hide");
+
+        var elements = document.getElementById("frames").children;
+        for (var i = 0; i < elements.length; ++i) {
+            var ele = elements[i];
+            var attr = find_child(ele, "rect").attributes;
+            var attr_x = parseFloat(attr.x.value);
+            var attr_w = parseFloat(attr.width.value);
+            var upstack = parseFloat(attr.y.value) > ymin;
+            if (upstack) {
+                if (attr_x <= xmin && (attr_x + attr_w + delta_float) >= xmax) {
+                    ele.classList.add("parent");
+                    zoom_parent(ele);
+                    update_text(ele);
+                }
+                else {
+                    ele.classList.add("hide");
+                }
+            }
+            else {
+                if (attr_x < xmin || (attr_x + delta_float) >= xmax) {
+                    ele.classList.add("hide");
+                }
+                else {
+                    zoom_child(ele, xmin, ratio);
+                    update_text(ele);
+                }
+            }
+        }
+        search();
+    }
+
+    function unzoom(dont_update_text) {
+        unzoombtn.classList.add("hide");
+        var elements = document.getElementById("frames").children;
+        for (var i = 0; i < elements.length; ++i) {
+            elements[i].classList.remove("parent");
+            elements[i].classList.remove("hide");
+            zoom_reset(elements[i]);
+            if (!dont_update_text) {
+                update_text(elements[i]);
+            }
+        }
+        search();
+    }
+
+    function clearzoom() {
+        unzoom();
+
+        var keyValues = get_params();
+        if (keyValues.x) {
+            delete keyValues.x;
+        }
+        if (keyValues.y) {
+            delete keyValues.y;
+        }
+        history.replaceState(null, null, parse_params(keyValues));
+    }
+
+    function toggle_ignorecase() {
+        ignorecase = !ignorecase;
+        if (ignorecase) {
+            ignorecaseBtn.classList.add("show");
+        } else {
+            ignorecaseBtn.classList.remove("show");
+        }
+        reset_search();
+        search();
+    }
+
+    function reset_search() {
+        var elements = document.querySelectorAll("#frames rect");
+        for (var i = 0; i < elements.length; ++i) {
+            orig_attr_load(elements[i], "fill")
+        }
+        var keyValues = get_params();
+        delete keyValues.s;
+        history.replaceState(null, null, parse_params(keyValues));
+    }
+
+    // show search prompt
+    function search_prompt() {
+        if (!searching) {
+            var term = prompt("Enter a search term (regexp " +
+                "allowed, eg: ^ext4_)"
+                + (ignorecase ? ", ignoring case sensitivity" : "")
+                + "\nPress Ctrl+I to toggle case sensitivity", "");
+            if (term != null) {
+                search(term);
+            }
+        } else {
+            reset_search();
+            searching = 0;
+            currentSearchTerm = null;
+            searchbtn.classList.remove("show");
+            searchbtn.firstChild.nodeValue = "Search";
+            matchedtxt.classList.add("hide");
+            matchedtxt.firstChild.nodeValue = "";
+        }
+    }
+
+    function search(term) {
+        if (term) {
+            currentSearchTerm = term;
+        }
+
+        var searchRegex = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+        var matches = new Object();
+        var maxwidth = 0;
+        var elements = document.getElementById("frames").children;
+        for (var i = 0; i < elements.length; ++i) {
+            var ele = elements[i];
+            var func = g_to_func(ele);
+            if (func == null) {
+                continue;
+            }
+            var rect = find_child(ele, "rect");
+            if (rect == null) {
+                continue;
+            }
+
+            // record max width
+            var w = parseFloat(rect.attributes.width.value);
+            if (w > maxwidth) {
+                maxwidth = w;
+            }
+            
+            // regex match func name
+            if (func.match(searchRegex)) {
+                var x = parseFloat(rect.attributes.x.value);
+                
+                // save original color to reset
+                orig_attr_save(rect, "fill");
+                
+                // highlight match rect
+                rect.attributes.fill.value = "rgb(230,0,230)";
+                // find max match width
+                if (matches[x] == undefined) {
+                    matches[x] = w;
+                } else {
+                    matches[x] = Math.max(matches[x], w);
+                }
+                searching = 1;
+            }
+        }
+        // search fail
+        if (!searching) {
+            return;
+        }
+        
+        // update url state
+        var keyValues = get_params();
+        keyValues.s = currentSearchTerm;
+        history.replaceState(null, null, parse_params(keyValues));
+
+        // update button state
+        searchbtn.classList.add("show");
+        searchbtn.firstChild.nodeValue = "Reset Search";
+
+        // compute match ratio
+        var lastx = -1;
+        var lastw = 0;
+        var count = 0;
+        var keys = Array();
+
+        // get all match x location
+        for (key in matches) {
+            if (matches.hasOwnProperty(key)) {
+                keys.push(key);
+            }
+        }
+        
+        keys.sort(function(a, b) {
+            return a - b;
+        });
+        
+        var delta_float = 0.0001;
+        for (var k in keys) {
+            var x = parseFloat(keys[k]);
+            var w = matches[keys[k]];
+            if (x >= (lastx + lastw - delta_float)) {
+                count += w;
+                lastx = x;
+                lastw = w;
+            }
+        }
+        // show match percent
+        matchedtxt.classList.remove("hide");
+        var ratio = 100 * count / maxwidth;
+        if (ratio != 100) {
+            ratio = ratio.toFixed(1);
+        }
+        matchedtxt.firstChild.nodeValue = "Matched: " + ratio + "%";
+    }
+]]>
+</script>
+<rect x="0" y="0" width="1200.000000" height="486.000000" fill="url(#background)"  />
+<text id="title" x="600.000000" y="24.000000">Flame Graph</text>
+<text id="details" x="10.000000" y="469.000000"> </text>
+<text id="unzoom" x="10.000000" y="24.000000" class="hide">Reset Zoom</text>
+<text id="search" x="1090.000000" y="24.000000">Search</text>
+<text id="ignorecase" x="1174.000000" y="24.000000">ic</text>
+<text id="matched" x="1090.000000" y="469.000000"> </text>
+<g id="frames">
+<g>
+<title>[libcangjie-runtime.so+0x26a48a] (2 samples, 0.02%)</title>
+<rect x = "10.00" y="341.00" width="0.20" height="15.00" fill="rgb(220,32,49)" rx="2" ry="2"/>
+<text x="13.00" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x265a76] (2 samples, 0.02%)</title>
+<rect x = "10.00" y="325.00" width="0.20" height="15.00" fill="rgb(211,137,51)" rx="2" ry="2"/>
+<text x="13.00" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20cee8] (2 samples, 0.02%)</title>
+<rect x = "11.60" y="133.00" width="0.20" height="15.00" fill="rgb(244,38,11)" rx="2" ry="2"/>
+<text x="14.60" y="145.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262280] (9 samples, 0.08%)</title>
+<rect x = "11.20" y="165.00" width="0.90" height="15.00" fill="rgb(234,197,12)" rx="2" ry="2"/>
+<text x="14.20" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c4d0] (7 samples, 0.06%)</title>
+<rect x = "11.40" y="149.00" width="0.70" height="15.00" fill="rgb(239,210,23)" rx="2" ry="2"/>
+<text x="14.40" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20dbc1] (2 samples, 0.02%)</title>
+<rect x = "12.10" y="133.00" width="0.20" height="15.00" fill="rgb(248,100,2)" rx="2" ry="2"/>
+<text x="15.10" y="145.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c58f] (3 samples, 0.03%)</title>
+<rect x = "12.10" y="149.00" width="0.30" height="15.00" fill="rgb(226,47,34)" rx="2" ry="2"/>
+<text x="15.10" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262296] (7 samples, 0.06%)</title>
+<rect x = "12.10" y="165.00" width="0.70" height="15.00" fill="rgb(246,165,45)" rx="2" ry="2"/>
+<text x="15.10" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x261ff6] (18 samples, 0.15%)</title>
+<rect x = "11.20" y="181.00" width="1.80" height="15.00" fill="rgb(210,75,20)" rx="2" ry="2"/>
+<text x="14.20" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2622bb] (2 samples, 0.02%)</title>
+<rect x = "12.79" y="165.00" width="0.20" height="15.00" fill="rgb(210,77,28)" rx="2" ry="2"/>
+<text x="15.79" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2678d9] (2 samples, 0.02%)</title>
+<rect x = "12.79" y="149.00" width="0.20" height="15.00" fill="rgb(243,165,5)" rx="2" ry="2"/>
+<text x="15.79" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2727a2] (31 samples, 0.26%)</title>
+<rect x = "10.30" y="309.00" width="3.09" height="15.00" fill="rgb(225,41,23)" rx="2" ry="2"/>
+<text x="13.30" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23064b] (30 samples, 0.25%)</title>
+<rect x = "10.40" y="293.00" width="2.99" height="15.00" fill="rgb(251,122,18)" rx="2" ry="2"/>
+<text x="13.40" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x230fa8] (25 samples, 0.21%)</title>
+<rect x = "10.90" y="277.00" width="2.50" height="15.00" fill="rgb(223,63,15)" rx="2" ry="2"/>
+<text x="13.90" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22cbd2] (25 samples, 0.21%)</title>
+<rect x = "10.90" y="261.00" width="2.50" height="15.00" fill="rgb(240,178,47)" rx="2" ry="2"/>
+<text x="13.90" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22d0f6] (25 samples, 0.21%)</title>
+<rect x = "10.90" y="245.00" width="2.50" height="15.00" fill="rgb(214,93,14)" rx="2" ry="2"/>
+<text x="13.90" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22c2d6] (24 samples, 0.20%)</title>
+<rect x = "11.00" y="229.00" width="2.40" height="15.00" fill="rgb(213,216,32)" rx="2" ry="2"/>
+<text x="14.00" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20b943] (22 samples, 0.19%)</title>
+<rect x = "11.20" y="213.00" width="2.20" height="15.00" fill="rgb(230,167,4)" rx="2" ry="2"/>
+<text x="14.20" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23eab5] (22 samples, 0.19%)</title>
+<rect x = "11.20" y="197.00" width="2.20" height="15.00" fill="rgb(222,12,9)" rx="2" ry="2"/>
+<text x="14.20" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26204b] (3 samples, 0.03%)</title>
+<rect x = "13.09" y="181.00" width="0.30" height="15.00" fill="rgb(222,47,37)" rx="2" ry="2"/>
+<text x="16.09" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262417] (2 samples, 0.02%)</title>
+<rect x = "13.19" y="165.00" width="0.20" height="15.00" fill="rgb(205,157,42)" rx="2" ry="2"/>
+<text x="16.19" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2727b2] (4 samples, 0.03%)</title>
+<rect x = "13.39" y="309.00" width="0.40" height="15.00" fill="rgb(233,57,25)" rx="2" ry="2"/>
+<text x="16.39" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x263793] (4 samples, 0.03%)</title>
+<rect x = "13.39" y="293.00" width="0.40" height="15.00" fill="rgb(248,204,39)" rx="2" ry="2"/>
+<text x="16.39" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x263bf0] (4 samples, 0.03%)</title>
+<rect x = "13.39" y="277.00" width="0.40" height="15.00" fill="rgb(211,194,42)" rx="2" ry="2"/>
+<text x="16.39" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x263625] (4 samples, 0.03%)</title>
+<rect x = "13.39" y="261.00" width="0.40" height="15.00" fill="rgb(223,211,22)" rx="2" ry="2"/>
+<text x="16.39" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x267ee8] (4 samples, 0.03%)</title>
+<rect x = "13.39" y="245.00" width="0.40" height="15.00" fill="rgb(215,52,35)" rx="2" ry="2"/>
+<text x="16.39" y="257.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0xa6337] (4 samples, 0.03%)</title>
+<rect x = "13.39" y="229.00" width="0.40" height="15.00" fill="rgb(212,223,51)" rx="2" ry="2"/>
+<text x="16.39" y="241.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0xa623e] (3 samples, 0.03%)</title>
+<rect x = "13.49" y="213.00" width="0.30" height="15.00" fill="rgb(246,10,35)" rx="2" ry="2"/>
+<text x="16.49" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x272821] (4 samples, 0.03%)</title>
+<rect x = "13.79" y="309.00" width="0.40" height="15.00" fill="rgb(225,197,37)" rx="2" ry="2"/>
+<text x="16.79" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23064b] (3 samples, 0.03%)</title>
+<rect x = "13.89" y="293.00" width="0.30" height="15.00" fill="rgb(252,147,36)" rx="2" ry="2"/>
+<text x="16.89" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x264339] (2 samples, 0.02%)</title>
+<rect x = "14.19" y="245.00" width="0.20" height="15.00" fill="rgb(206,157,41)" rx="2" ry="2"/>
+<text x="17.19" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x264347] (2 samples, 0.02%)</title>
+<rect x = "14.39" y="245.00" width="0.20" height="15.00" fill="rgb(205,197,45)" rx="2" ry="2"/>
+<text x="17.39" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26435b] (3 samples, 0.03%)</title>
+<rect x = "14.59" y="245.00" width="0.30" height="15.00" fill="rgb(207,140,4)" rx="2" ry="2"/>
+<text x="17.59" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2655ed] (2 samples, 0.02%)</title>
+<rect x = "14.69" y="229.00" width="0.20" height="15.00" fill="rgb(251,58,0)" rx="2" ry="2"/>
+<text x="17.69" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x270e19] (2 samples, 0.02%)</title>
+<rect x = "14.99" y="229.00" width="0.20" height="15.00" fill="rgb(220,16,17)" rx="2" ry="2"/>
+<text x="17.99" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x270fc2] (6 samples, 0.05%)</title>
+<rect x = "15.29" y="213.00" width="0.60" height="15.00" fill="rgb(248,29,9)" rx="2" ry="2"/>
+<text x="18.29" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x270e2a] (8 samples, 0.07%)</title>
+<rect x = "15.19" y="229.00" width="0.80" height="15.00" fill="rgb(230,98,9)" rx="2" ry="2"/>
+<text x="18.19" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26436c] (14 samples, 0.12%)</title>
+<rect x = "14.89" y="245.00" width="1.40" height="15.00" fill="rgb(237,139,9)" rx="2" ry="2"/>
+<text x="17.89" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x270e33] (3 samples, 0.03%)</title>
+<rect x = "15.99" y="229.00" width="0.30" height="15.00" fill="rgb(212,121,42)" rx="2" ry="2"/>
+<text x="18.99" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x271623] (2 samples, 0.02%)</title>
+<rect x = "16.89" y="181.00" width="0.20" height="15.00" fill="rgb(212,218,4)" rx="2" ry="2"/>
+<text x="19.89" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x271655] (8 samples, 0.07%)</title>
+<rect x = "17.09" y="181.00" width="0.80" height="15.00" fill="rgb(240,179,33)" rx="2" ry="2"/>
+<text x="20.09" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x271672] (2 samples, 0.02%)</title>
+<rect x = "17.89" y="181.00" width="0.20" height="15.00" fill="rgb(236,169,26)" rx="2" ry="2"/>
+<text x="20.89" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273c1a] (2 samples, 0.02%)</title>
+<rect x = "17.89" y="165.00" width="0.20" height="15.00" fill="rgb(222,131,33)" rx="2" ry="2"/>
+<text x="20.89" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x271699] (2 samples, 0.02%)</title>
+<rect x = "18.08" y="181.00" width="0.20" height="15.00" fill="rgb(243,89,32)" rx="2" ry="2"/>
+<text x="21.08" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22022a] (17 samples, 0.14%)</title>
+<rect x = "16.69" y="197.00" width="1.70" height="15.00" fill="rgb(219,205,10)" rx="2" ry="2"/>
+<text x="19.69" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fddc] (20 samples, 0.17%)</title>
+<rect x = "16.59" y="213.00" width="2.00" height="15.00" fill="rgb(238,0,16)" rx="2" ry="2"/>
+<text x="19.59" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2715c8] (5 samples, 0.04%)</title>
+<rect x = "18.68" y="165.00" width="0.50" height="15.00" fill="rgb(209,125,9)" rx="2" ry="2"/>
+<text x="21.68" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22022a] (8 samples, 0.07%)</title>
+<rect x = "18.68" y="181.00" width="0.80" height="15.00" fill="rgb(244,9,8)" rx="2" ry="2"/>
+<text x="21.68" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fe8f] (10 samples, 0.08%)</title>
+<rect x = "18.58" y="197.00" width="1.00" height="15.00" fill="rgb(218,49,5)" rx="2" ry="2"/>
+<text x="21.58" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273c80] (3 samples, 0.03%)</title>
+<rect x = "20.08" y="181.00" width="0.30" height="15.00" fill="rgb(250,158,50)" rx="2" ry="2"/>
+<text x="23.08" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2717ce] (41 samples, 0.35%)</title>
+<rect x = "16.49" y="229.00" width="4.09" height="15.00" fill="rgb(209,153,30)" rx="2" ry="2"/>
+<text x="19.49" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fdfc] (20 samples, 0.17%)</title>
+<rect x = "18.58" y="213.00" width="2.00" height="15.00" fill="rgb(248,227,1)" rx="2" ry="2"/>
+<text x="21.58" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fed1] (9 samples, 0.08%)</title>
+<rect x = "19.68" y="197.00" width="0.90" height="15.00" fill="rgb(246,206,45)" rx="2" ry="2"/>
+<text x="22.68" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2643cc] (45 samples, 0.38%)</title>
+<rect x = "16.39" y="245.00" width="4.49" height="15.00" fill="rgb(244,64,34)" rx="2" ry="2"/>
+<text x="19.39" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2717e5] (3 samples, 0.03%)</title>
+<rect x = "20.58" y="229.00" width="0.30" height="15.00" fill="rgb(253,30,41)" rx="2" ry="2"/>
+<text x="23.58" y="241.00"></text>
+</g>
+<g>
+<title>cfree (3 samples, 0.03%)</title>
+<rect x = "20.58" y="213.00" width="0.30" height="15.00" fill="rgb(239,85,46)" rx="2" ry="2"/>
+<text x="23.58" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26474b] (68 samples, 0.58%)</title>
+<rect x = "14.19" y="293.00" width="6.79" height="15.00" fill="rgb(215,150,4)" rx="2" ry="2"/>
+<text x="17.19" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x263f0c] (68 samples, 0.58%)</title>
+<rect x = "14.19" y="277.00" width="6.79" height="15.00" fill="rgb(242,119,33)" rx="2" ry="2"/>
+<text x="17.19" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2949ff] (68 samples, 0.58%)</title>
+<rect x = "14.19" y="261.00" width="6.79" height="15.00" fill="rgb(207,134,34)" rx="2" ry="2"/>
+<text x="17.19" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x264b16] (3 samples, 0.03%)</title>
+<rect x = "20.98" y="277.00" width="0.30" height="15.00" fill="rgb(234,130,2)" rx="2" ry="2"/>
+<text x="23.98" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26505f] (2 samples, 0.02%)</title>
+<rect x = "21.08" y="261.00" width="0.20" height="15.00" fill="rgb(220,56,3)" rx="2" ry="2"/>
+<text x="24.08" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22ac0f] (2 samples, 0.02%)</title>
+<rect x = "21.08" y="245.00" width="0.20" height="15.00" fill="rgb(217,71,22)" rx="2" ry="2"/>
+<text x="24.08" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x27325e] (112 samples, 0.95%)</title>
+<rect x = "10.30" y="325.00" width="11.18" height="15.00" fill="rgb(223,44,8)" rx="2" ry="2"/>
+<text x="13.30" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x27283e] (73 samples, 0.62%)</title>
+<rect x = "14.19" y="309.00" width="7.29" height="15.00" fill="rgb(243,214,49)" rx="2" ry="2"/>
+<text x="17.19" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2647ab] (5 samples, 0.04%)</title>
+<rect x = "20.98" y="293.00" width="0.50" height="15.00" fill="rgb(225,114,37)" rx="2" ry="2"/>
+<text x="23.98" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x264cfa] (2 samples, 0.02%)</title>
+<rect x = "21.28" y="277.00" width="0.20" height="15.00" fill="rgb(231,188,42)" rx="2" ry="2"/>
+<text x="24.28" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23064b] (2 samples, 0.02%)</title>
+<rect x = "21.28" y="261.00" width="0.20" height="15.00" fill="rgb(210,171,49)" rx="2" ry="2"/>
+<text x="24.28" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23ee4c] (2 samples, 0.02%)</title>
+<rect x = "21.78" y="197.00" width="0.20" height="15.00" fill="rgb(234,160,25)" rx="2" ry="2"/>
+<text x="24.78" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20ba3a] (4 samples, 0.03%)</title>
+<rect x = "21.78" y="213.00" width="0.40" height="15.00" fill="rgb(239,162,35)" rx="2" ry="2"/>
+<text x="24.78" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262b50] (5 samples, 0.04%)</title>
+<rect x = "22.18" y="165.00" width="0.50" height="15.00" fill="rgb(234,202,52)" rx="2" ry="2"/>
+<text x="25.18" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c4d0] (4 samples, 0.03%)</title>
+<rect x = "22.28" y="149.00" width="0.40" height="15.00" fill="rgb(228,37,25)" rx="2" ry="2"/>
+<text x="25.28" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20cf57] (2 samples, 0.02%)</title>
+<rect x = "22.48" y="133.00" width="0.20" height="15.00" fill="rgb(206,209,2)" rx="2" ry="2"/>
+<text x="25.48" y="145.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20dd4e] (2 samples, 0.02%)</title>
+<rect x = "22.68" y="117.00" width="0.20" height="15.00" fill="rgb(253,99,36)" rx="2" ry="2"/>
+<text x="25.68" y="129.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c58f] (3 samples, 0.03%)</title>
+<rect x = "22.68" y="149.00" width="0.30" height="15.00" fill="rgb(238,168,52)" rx="2" ry="2"/>
+<text x="25.68" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20dbc1] (3 samples, 0.03%)</title>
+<rect x = "22.68" y="133.00" width="0.30" height="15.00" fill="rgb(248,78,27)" rx="2" ry="2"/>
+<text x="25.68" y="145.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c7fb] (2 samples, 0.02%)</title>
+<rect x = "23.18" y="149.00" width="0.20" height="15.00" fill="rgb(250,166,12)" rx="2" ry="2"/>
+<text x="26.18" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262b66] (8 samples, 0.07%)</title>
+<rect x = "22.68" y="165.00" width="0.80" height="15.00" fill="rgb(229,71,25)" rx="2" ry="2"/>
+<text x="25.68" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26262d] (14 samples, 0.12%)</title>
+<rect x = "22.18" y="181.00" width="1.40" height="15.00" fill="rgb(239,50,20)" rx="2" ry="2"/>
+<text x="25.18" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2626b7] (2 samples, 0.02%)</title>
+<rect x = "23.57" y="181.00" width="0.20" height="15.00" fill="rgb(219,147,35)" rx="2" ry="2"/>
+<text x="26.57" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262764] (2 samples, 0.02%)</title>
+<rect x = "23.77" y="181.00" width="0.20" height="15.00" fill="rgb(234,146,32)" rx="2" ry="2"/>
+<text x="26.77" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x24122a] (2 samples, 0.02%)</title>
+<rect x = "23.77" y="165.00" width="0.20" height="15.00" fill="rgb(233,141,36)" rx="2" ry="2"/>
+<text x="26.77" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x24156c] (2 samples, 0.02%)</title>
+<rect x = "23.77" y="149.00" width="0.20" height="15.00" fill="rgb(219,155,22)" rx="2" ry="2"/>
+<text x="26.77" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x27301a] (26 samples, 0.22%)</title>
+<rect x = "21.58" y="309.00" width="2.60" height="15.00" fill="rgb(236,183,46)" rx="2" ry="2"/>
+<text x="24.58" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x230db8] (26 samples, 0.22%)</title>
+<rect x = "21.58" y="293.00" width="2.60" height="15.00" fill="rgb(229,139,31)" rx="2" ry="2"/>
+<text x="24.58" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x230fa8] (24 samples, 0.20%)</title>
+<rect x = "21.78" y="277.00" width="2.40" height="15.00" fill="rgb(239,52,11)" rx="2" ry="2"/>
+<text x="24.78" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22cbd2] (24 samples, 0.20%)</title>
+<rect x = "21.78" y="261.00" width="2.40" height="15.00" fill="rgb(213,119,28)" rx="2" ry="2"/>
+<text x="24.78" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22d3b3] (24 samples, 0.20%)</title>
+<rect x = "21.78" y="245.00" width="2.40" height="15.00" fill="rgb(237,63,46)" rx="2" ry="2"/>
+<text x="24.78" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22c3ef] (24 samples, 0.20%)</title>
+<rect x = "21.78" y="229.00" width="2.40" height="15.00" fill="rgb(223,167,29)" rx="2" ry="2"/>
+<text x="24.78" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20ba4b] (20 samples, 0.17%)</title>
+<rect x = "22.18" y="213.00" width="2.00" height="15.00" fill="rgb(210,222,51)" rx="2" ry="2"/>
+<text x="25.18" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23ebfc] (20 samples, 0.17%)</title>
+<rect x = "22.18" y="197.00" width="2.00" height="15.00" fill="rgb(250,33,37)" rx="2" ry="2"/>
+<text x="25.18" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x27326e] (27 samples, 0.23%)</title>
+<rect x = "21.58" y="325.00" width="2.69" height="15.00" fill="rgb(224,192,5)" rx="2" ry="2"/>
+<text x="24.58" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26a70a] (2 samples, 0.02%)</title>
+<rect x = "24.27" y="309.00" width="0.20" height="15.00" fill="rgb(245,196,40)" rx="2" ry="2"/>
+<text x="27.27" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23064b] (2 samples, 0.02%)</title>
+<rect x = "24.27" y="293.00" width="0.20" height="15.00" fill="rgb(229,19,41)" rx="2" ry="2"/>
+<text x="27.27" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x27327a] (4 samples, 0.03%)</title>
+<rect x = "24.27" y="325.00" width="0.40" height="15.00" fill="rgb(241,165,15)" rx="2" ry="2"/>
+<text x="27.27" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26a7a0] (2 samples, 0.02%)</title>
+<rect x = "24.47" y="309.00" width="0.20" height="15.00" fill="rgb(224,61,54)" rx="2" ry="2"/>
+<text x="27.47" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2949ff] (2 samples, 0.02%)</title>
+<rect x = "24.47" y="293.00" width="0.20" height="15.00" fill="rgb(248,51,43)" rx="2" ry="2"/>
+<text x="27.47" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x25d072] (2 samples, 0.02%)</title>
+<rect x = "24.47" y="277.00" width="0.20" height="15.00" fill="rgb(236,226,53)" rx="2" ry="2"/>
+<text x="27.47" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x25a3bf] (2 samples, 0.02%)</title>
+<rect x = "24.47" y="261.00" width="0.20" height="15.00" fill="rgb(249,164,51)" rx="2" ry="2"/>
+<text x="27.47" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260473] (148 samples, 1.25%)</title>
+<rect x = "10.00" y="389.00" width="14.77" height="15.00" fill="rgb(213,191,35)" rx="2" ry="2"/>
+<text x="13.00" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260546] (148 samples, 1.25%)</title>
+<rect x = "10.00" y="373.00" width="14.77" height="15.00" fill="rgb(214,207,40)" rx="2" ry="2"/>
+<text x="13.00" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x268a76] (148 samples, 1.25%)</title>
+<rect x = "10.00" y="357.00" width="14.77" height="15.00" fill="rgb(233,216,9)" rx="2" ry="2"/>
+<text x="13.00" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26a50c] (146 samples, 1.23%)</title>
+<rect x = "10.20" y="341.00" width="14.57" height="15.00" fill="rgb(244,159,22)" rx="2" ry="2"/>
+<text x="13.20" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c721] (2 samples, 0.02%)</title>
+<rect x = "24.87" y="389.00" width="0.20" height="15.00" fill="rgb(249,13,13)" rx="2" ry="2"/>
+<text x="27.87" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c753] (2 samples, 0.02%)</title>
+<rect x = "25.77" y="373.00" width="0.20" height="15.00" fill="rgb(250,11,6)" rx="2" ry="2"/>
+<text x="28.77" y="385.00"></text>
+</g>
+<g>
+<title>__pthread_mutex_lock (2 samples, 0.02%)</title>
+<rect x = "25.77" y="357.00" width="0.20" height="15.00" fill="rgb(232,223,52)" rx="2" ry="2"/>
+<text x="28.77" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c792] (2 samples, 0.02%)</title>
+<rect x = "26.07" y="373.00" width="0.20" height="15.00" fill="rgb(236,36,31)" rx="2" ry="2"/>
+<text x="29.07" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b540] (6 samples, 0.05%)</title>
+<rect x = "26.27" y="357.00" width="0.60" height="15.00" fill="rgb(209,209,22)" rx="2" ry="2"/>
+<text x="29.27" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282bd0] (3 samples, 0.03%)</title>
+<rect x = "27.07" y="357.00" width="0.30" height="15.00" fill="rgb(228,123,38)" rx="2" ry="2"/>
+<text x="30.07" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2873ec] (10 samples, 0.08%)</title>
+<rect x = "27.47" y="357.00" width="1.00" height="15.00" fill="rgb(226,192,44)" rx="2" ry="2"/>
+<text x="30.47" y="369.00"></text>
+</g>
+<g>
+<title>pthread_mutex_trylock (10 samples, 0.08%)</title>
+<rect x = "27.47" y="341.00" width="1.00" height="15.00" fill="rgb(218,3,8)" rx="2" ry="2"/>
+<text x="30.47" y="353.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0xa0952] (228 samples, 1.93%)</title>
+<rect x = "28.57" y="325.00" width="22.76" height="15.00" fill="rgb(233,32,17)" rx="2" ry="2"/>
+<text x="31.57" y="337.00">[..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28dd8f] (258 samples, 2.18%)</title>
+<rect x = "28.47" y="341.00" width="25.75" height="15.00" fill="rgb(205,91,38)" rx="2" ry="2"/>
+<text x="31.47" y="353.00">[..</text>
+</g>
+<g>
+<title>epoll_wait (29 samples, 0.25%)</title>
+<rect x = "51.32" y="325.00" width="2.89" height="15.00" fill="rgb(242,7,51)" rx="2" ry="2"/>
+<text x="54.32" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28dd92] (8 samples, 0.07%)</title>
+<rect x = "54.22" y="341.00" width="0.80" height="15.00" fill="rgb(231,195,10)" rx="2" ry="2"/>
+<text x="57.22" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x287431] (270 samples, 2.28%)</title>
+<rect x = "28.47" y="357.00" width="26.95" height="15.00" fill="rgb(247,102,13)" rx="2" ry="2"/>
+<text x="31.47" y="369.00">[..</text>
+</g>
+<g>
+<title>epoll_wait (2 samples, 0.02%)</title>
+<rect x = "55.22" y="341.00" width="0.20" height="15.00" fill="rgb(226,144,46)" rx="2" ry="2"/>
+<text x="58.22" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x287434] (5 samples, 0.04%)</title>
+<rect x = "55.42" y="357.00" width="0.50" height="15.00" fill="rgb(229,208,40)" rx="2" ry="2"/>
+<text x="58.42" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x287466] (2 samples, 0.02%)</title>
+<rect x = "56.01" y="357.00" width="0.20" height="15.00" fill="rgb(236,163,28)" rx="2" ry="2"/>
+<text x="59.01" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28748d] (2 samples, 0.02%)</title>
+<rect x = "56.31" y="357.00" width="0.20" height="15.00" fill="rgb(221,176,27)" rx="2" ry="2"/>
+<text x="59.31" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x287491] (73 samples, 0.62%)</title>
+<rect x = "56.51" y="357.00" width="7.29" height="15.00" fill="rgb(238,9,46)" rx="2" ry="2"/>
+<text x="59.51" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2874da] (2 samples, 0.02%)</title>
+<rect x = "63.80" y="357.00" width="0.20" height="15.00" fill="rgb(231,190,40)" rx="2" ry="2"/>
+<text x="66.80" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2874e4] (12 samples, 0.10%)</title>
+<rect x = "64.00" y="357.00" width="1.20" height="15.00" fill="rgb(225,220,28)" rx="2" ry="2"/>
+<text x="67.00" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2874fb] (63 samples, 0.53%)</title>
+<rect x = "65.20" y="357.00" width="6.29" height="15.00" fill="rgb(208,197,50)" rx="2" ry="2"/>
+<text x="68.20" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x287517] (58 samples, 0.49%)</title>
+<rect x = "71.49" y="357.00" width="5.79" height="15.00" fill="rgb(207,175,25)" rx="2" ry="2"/>
+<text x="74.49" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x287522] (13 samples, 0.11%)</title>
+<rect x = "77.27" y="357.00" width="1.30" height="15.00" fill="rgb(207,89,10)" rx="2" ry="2"/>
+<text x="80.27" y="369.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (13 samples, 0.11%)</title>
+<rect x = "77.27" y="341.00" width="1.30" height="15.00" fill="rgb(232,133,29)" rx="2" ry="2"/>
+<text x="80.27" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28752d] (2 samples, 0.02%)</title>
+<rect x = "78.57" y="357.00" width="0.20" height="15.00" fill="rgb(223,127,44)" rx="2" ry="2"/>
+<text x="81.57" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x287535] (3 samples, 0.03%)</title>
+<rect x = "78.77" y="357.00" width="0.30" height="15.00" fill="rgb(213,201,0)" rx="2" ry="2"/>
+<text x="81.77" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282be0] (3 samples, 0.03%)</title>
+<rect x = "78.77" y="341.00" width="0.30" height="15.00" fill="rgb(248,57,1)" rx="2" ry="2"/>
+<text x="81.77" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28755e] (2 samples, 0.02%)</title>
+<rect x = "79.17" y="357.00" width="0.20" height="15.00" fill="rgb(238,20,16)" rx="2" ry="2"/>
+<text x="82.17" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x287580] (4 samples, 0.03%)</title>
+<rect x = "79.37" y="357.00" width="0.40" height="15.00" fill="rgb(241,199,3)" rx="2" ry="2"/>
+<text x="82.37" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2876d9] (10 samples, 0.08%)</title>
+<rect x = "79.77" y="357.00" width="1.00" height="15.00" fill="rgb(236,119,53)" rx="2" ry="2"/>
+<text x="82.77" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x9d3bc] (8 samples, 0.07%)</title>
+<rect x = "79.97" y="341.00" width="0.80" height="15.00" fill="rgb(214,205,52)" rx="2" ry="2"/>
+<text x="82.97" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28baf0] (2 samples, 0.02%)</title>
+<rect x = "80.77" y="357.00" width="0.20" height="15.00" fill="rgb(221,107,15)" rx="2" ry="2"/>
+<text x="83.77" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28bbd7] (2 samples, 0.02%)</title>
+<rect x = "80.97" y="357.00" width="0.20" height="15.00" fill="rgb(254,199,14)" rx="2" ry="2"/>
+<text x="83.97" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c7ca] (555 samples, 4.69%)</title>
+<rect x = "26.27" y="373.00" width="55.40" height="15.00" fill="rgb(239,48,22)" rx="2" ry="2"/>
+<text x="29.27" y="385.00">[libc..</text>
+</g>
+<g>
+<title>pthread_mutex_unlock (2 samples, 0.02%)</title>
+<rect x = "81.47" y="357.00" width="0.20" height="15.00" fill="rgb(208,116,15)" rx="2" ry="2"/>
+<text x="84.47" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x94efe] (7 samples, 0.06%)</title>
+<rect x = "82.07" y="325.00" width="0.70" height="15.00" fill="rgb(219,186,43)" rx="2" ry="2"/>
+<text x="85.07" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28a2cb] (16 samples, 0.14%)</title>
+<rect x = "82.07" y="341.00" width="1.60" height="15.00" fill="rgb(244,151,47)" rx="2" ry="2"/>
+<text x="85.07" y="353.00"></text>
+</g>
+<g>
+<title>__pthread_mutex_lock (9 samples, 0.08%)</title>
+<rect x = "82.76" y="325.00" width="0.90" height="15.00" fill="rgb(206,204,5)" rx="2" ry="2"/>
+<text x="85.76" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28a303] (7 samples, 0.06%)</title>
+<rect x = "83.76" y="341.00" width="0.70" height="15.00" fill="rgb(219,20,34)" rx="2" ry="2"/>
+<text x="86.76" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28a30f] (2 samples, 0.02%)</title>
+<rect x = "84.46" y="341.00" width="0.20" height="15.00" fill="rgb(212,223,15)" rx="2" ry="2"/>
+<text x="87.46" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28a319] (2 samples, 0.02%)</title>
+<rect x = "84.76" y="341.00" width="0.20" height="15.00" fill="rgb(237,82,0)" rx="2" ry="2"/>
+<text x="87.76" y="353.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x94f67] (2 samples, 0.02%)</title>
+<rect x = "85.16" y="325.00" width="0.20" height="15.00" fill="rgb(229,1,14)" rx="2" ry="2"/>
+<text x="88.16" y="337.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x9d3bc] (5 samples, 0.04%)</title>
+<rect x = "85.36" y="325.00" width="0.50" height="15.00" fill="rgb(221,140,38)" rx="2" ry="2"/>
+<text x="88.36" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28a34f] (9 samples, 0.08%)</title>
+<rect x = "85.06" y="341.00" width="0.90" height="15.00" fill="rgb(251,44,33)" rx="2" ry="2"/>
+<text x="88.06" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28a354] (2 samples, 0.02%)</title>
+<rect x = "85.96" y="341.00" width="0.20" height="15.00" fill="rgb(245,219,29)" rx="2" ry="2"/>
+<text x="88.96" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2834ec] (44 samples, 0.37%)</title>
+<rect x = "81.87" y="357.00" width="4.39" height="15.00" fill="rgb(227,183,27)" rx="2" ry="2"/>
+<text x="84.87" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2858f8] (3 samples, 0.03%)</title>
+<rect x = "86.46" y="341.00" width="0.30" height="15.00" fill="rgb(230,3,14)" rx="2" ry="2"/>
+<text x="89.46" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28599e] (2 samples, 0.02%)</title>
+<rect x = "86.96" y="341.00" width="0.20" height="15.00" fill="rgb(223,216,45)" rx="2" ry="2"/>
+<text x="89.96" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2859b1] (2 samples, 0.02%)</title>
+<rect x = "87.16" y="341.00" width="0.20" height="15.00" fill="rgb(238,10,16)" rx="2" ry="2"/>
+<text x="90.16" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2859bb] (2 samples, 0.02%)</title>
+<rect x = "87.36" y="341.00" width="0.20" height="15.00" fill="rgb(254,167,36)" rx="2" ry="2"/>
+<text x="90.36" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28351d] (22 samples, 0.19%)</title>
+<rect x = "86.26" y="357.00" width="2.20" height="15.00" fill="rgb(241,21,9)" rx="2" ry="2"/>
+<text x="89.26" y="369.00"></text>
+</g>
+<g>
+<title>sem_post (7 samples, 0.06%)</title>
+<rect x = "87.76" y="341.00" width="0.70" height="15.00" fill="rgb(254,97,0)" rx="2" ry="2"/>
+<text x="90.76" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c7d8] (69 samples, 0.58%)</title>
+<rect x = "81.77" y="373.00" width="6.89" height="15.00" fill="rgb(243,14,22)" rx="2" ry="2"/>
+<text x="84.77" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c7e9] (6 samples, 0.05%)</title>
+<rect x = "88.65" y="373.00" width="0.60" height="15.00" fill="rgb(214,90,1)" rx="2" ry="2"/>
+<text x="91.65" y="385.00"></text>
+</g>
+<g>
+<title>__pthread_mutex_lock (6 samples, 0.05%)</title>
+<rect x = "88.65" y="357.00" width="0.60" height="15.00" fill="rgb(242,32,50)" rx="2" ry="2"/>
+<text x="91.65" y="369.00"></text>
+</g>
+<g>
+<title>[[vdso]+0x7fb4ad289fba] (10 samples, 0.08%)</title>
+<rect x = "89.35" y="325.00" width="1.00" height="15.00" fill="rgb(249,165,35)" rx="2" ry="2"/>
+<text x="92.35" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28de23] (14 samples, 0.12%)</title>
+<rect x = "89.25" y="357.00" width="1.40" height="15.00" fill="rgb(241,130,25)" rx="2" ry="2"/>
+<text x="92.25" y="369.00"></text>
+</g>
+<g>
+<title>__clock_gettime (14 samples, 0.12%)</title>
+<rect x = "89.25" y="341.00" width="1.40" height="15.00" fill="rgb(215,20,21)" rx="2" ry="2"/>
+<text x="92.25" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c809] (17 samples, 0.14%)</title>
+<rect x = "89.25" y="373.00" width="1.70" height="15.00" fill="rgb(208,85,26)" rx="2" ry="2"/>
+<text x="92.25" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c1c7] (2 samples, 0.02%)</title>
+<rect x = "91.05" y="357.00" width="0.20" height="15.00" fill="rgb(249,64,30)" rx="2" ry="2"/>
+<text x="94.05" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c2c1] (2 samples, 0.02%)</title>
+<rect x = "91.45" y="357.00" width="0.20" height="15.00" fill="rgb(227,13,31)" rx="2" ry="2"/>
+<text x="94.45" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c07c] (4 samples, 0.03%)</title>
+<rect x = "91.95" y="341.00" width="0.40" height="15.00" fill="rgb(246,102,14)" rx="2" ry="2"/>
+<text x="94.95" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c08b] (2 samples, 0.02%)</title>
+<rect x = "92.35" y="341.00" width="0.20" height="15.00" fill="rgb(228,12,35)" rx="2" ry="2"/>
+<text x="95.35" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c2d3] (10 samples, 0.08%)</title>
+<rect x = "91.65" y="357.00" width="1.00" height="15.00" fill="rgb(220,41,25)" rx="2" ry="2"/>
+<text x="94.65" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28fe28] (2 samples, 0.02%)</title>
+<rect x = "93.14" y="341.00" width="0.20" height="15.00" fill="rgb(208,139,22)" rx="2" ry="2"/>
+<text x="96.14" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28fe59] (3 samples, 0.03%)</title>
+<rect x = "93.44" y="341.00" width="0.30" height="15.00" fill="rgb(245,225,29)" rx="2" ry="2"/>
+<text x="96.44" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c2e4] (12 samples, 0.10%)</title>
+<rect x = "92.65" y="357.00" width="1.20" height="15.00" fill="rgb(246,221,5)" rx="2" ry="2"/>
+<text x="95.65" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c814] (33 samples, 0.28%)</title>
+<rect x = "90.95" y="373.00" width="3.29" height="15.00" fill="rgb(251,84,12)" rx="2" ry="2"/>
+<text x="93.95" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28fe21] (2 samples, 0.02%)</title>
+<rect x = "94.04" y="357.00" width="0.20" height="15.00" fill="rgb(215,17,28)" rx="2" ry="2"/>
+<text x="97.04" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c81c] (5 samples, 0.04%)</title>
+<rect x = "94.24" y="373.00" width="0.50" height="15.00" fill="rgb(246,173,4)" rx="2" ry="2"/>
+<text x="97.24" y="385.00"></text>
+</g>
+<g>
+<title>__pthread_mutex_lock (2 samples, 0.02%)</title>
+<rect x = "95.04" y="373.00" width="0.20" height="15.00" fill="rgb(209,85,12)" rx="2" ry="2"/>
+<text x="98.04" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28c88c] (703 samples, 5.95%)</title>
+<rect x = "25.27" y="389.00" width="70.17" height="15.00" fill="rgb(232,67,26)" rx="2" ry="2"/>
+<text x="28.27" y="401.00">[libcan..</text>
+</g>
+<g>
+<title>pthread_mutex_unlock (2 samples, 0.02%)</title>
+<rect x = "95.24" y="373.00" width="0.20" height="15.00" fill="rgb(241,152,19)" rx="2" ry="2"/>
+<text x="98.24" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26435b] (2 samples, 0.02%)</title>
+<rect x = "95.44" y="373.00" width="0.20" height="15.00" fill="rgb(206,120,2)" rx="2" ry="2"/>
+<text x="98.44" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2655ed] (2 samples, 0.02%)</title>
+<rect x = "95.44" y="357.00" width="0.20" height="15.00" fill="rgb(223,13,23)" rx="2" ry="2"/>
+<text x="98.44" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x270e19] (3 samples, 0.03%)</title>
+<rect x = "95.84" y="357.00" width="0.30" height="15.00" fill="rgb(233,184,43)" rx="2" ry="2"/>
+<text x="98.84" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22e9f7] (2 samples, 0.02%)</title>
+<rect x = "96.44" y="325.00" width="0.20" height="15.00" fill="rgb(207,27,35)" rx="2" ry="2"/>
+<text x="99.44" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22eb1c] (2 samples, 0.02%)</title>
+<rect x = "96.84" y="325.00" width="0.20" height="15.00" fill="rgb(224,5,54)" rx="2" ry="2"/>
+<text x="99.84" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x270fc2] (9 samples, 0.08%)</title>
+<rect x = "96.44" y="341.00" width="0.90" height="15.00" fill="rgb(254,105,23)" rx="2" ry="2"/>
+<text x="99.44" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x270e2a] (13 samples, 0.11%)</title>
+<rect x = "96.14" y="357.00" width="1.30" height="15.00" fill="rgb(227,9,26)" rx="2" ry="2"/>
+<text x="99.14" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26436c] (20 samples, 0.17%)</title>
+<rect x = "95.64" y="373.00" width="2.00" height="15.00" fill="rgb(248,113,31)" rx="2" ry="2"/>
+<text x="98.64" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x270e33] (2 samples, 0.02%)</title>
+<rect x = "97.44" y="357.00" width="0.20" height="15.00" fill="rgb(253,110,35)" rx="2" ry="2"/>
+<text x="100.44" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x271655] (7 samples, 0.06%)</title>
+<rect x = "97.94" y="309.00" width="0.70" height="15.00" fill="rgb(239,99,38)" rx="2" ry="2"/>
+<text x="100.94" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fddc] (13 samples, 0.11%)</title>
+<rect x = "97.64" y="341.00" width="1.30" height="15.00" fill="rgb(250,92,35)" rx="2" ry="2"/>
+<text x="100.64" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22022a] (13 samples, 0.11%)</title>
+<rect x = "97.64" y="325.00" width="1.30" height="15.00" fill="rgb(243,83,53)" rx="2" ry="2"/>
+<text x="100.64" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2715c8] (2 samples, 0.02%)</title>
+<rect x = "99.23" y="293.00" width="0.20" height="15.00" fill="rgb(208,103,49)" rx="2" ry="2"/>
+<text x="102.23" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22022a] (6 samples, 0.05%)</title>
+<rect x = "99.13" y="309.00" width="0.60" height="15.00" fill="rgb(237,87,16)" rx="2" ry="2"/>
+<text x="102.13" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fe8f] (8 samples, 0.07%)</title>
+<rect x = "99.03" y="325.00" width="0.80" height="15.00" fill="rgb(219,69,22)" rx="2" ry="2"/>
+<text x="102.03" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2643cc] (26 samples, 0.22%)</title>
+<rect x = "97.64" y="373.00" width="2.60" height="15.00" fill="rgb(215,68,19)" rx="2" ry="2"/>
+<text x="100.64" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2717ce] (26 samples, 0.22%)</title>
+<rect x = "97.64" y="357.00" width="2.60" height="15.00" fill="rgb(228,72,48)" rx="2" ry="2"/>
+<text x="100.64" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fdfc] (13 samples, 0.11%)</title>
+<rect x = "98.93" y="341.00" width="1.30" height="15.00" fill="rgb(254,145,16)" rx="2" ry="2"/>
+<text x="101.93" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fed1] (4 samples, 0.03%)</title>
+<rect x = "99.83" y="325.00" width="0.40" height="15.00" fill="rgb(215,203,39)" rx="2" ry="2"/>
+<text x="102.83" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21bb9e] (2 samples, 0.02%)</title>
+<rect x = "100.33" y="325.00" width="0.20" height="15.00" fill="rgb(206,20,20)" rx="2" ry="2"/>
+<text x="103.33" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2714ad] (2 samples, 0.02%)</title>
+<rect x = "100.33" y="309.00" width="0.20" height="15.00" fill="rgb(251,67,7)" rx="2" ry="2"/>
+<text x="103.33" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2670de] (3 samples, 0.03%)</title>
+<rect x = "100.33" y="373.00" width="0.30" height="15.00" fill="rgb(216,157,0)" rx="2" ry="2"/>
+<text x="103.33" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x263438] (3 samples, 0.03%)</title>
+<rect x = "100.33" y="357.00" width="0.30" height="15.00" fill="rgb(206,101,50)" rx="2" ry="2"/>
+<text x="103.33" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28ad98] (3 samples, 0.03%)</title>
+<rect x = "100.33" y="341.00" width="0.30" height="15.00" fill="rgb(211,25,48)" rx="2" ry="2"/>
+<text x="103.33" y="353.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x12080c] (909 samples, 7.69%)</title>
+<rect x = "10.00" y="421.00" width="90.73" height="15.00" fill="rgb(224,19,27)" rx="2" ry="2"/>
+<text x="13.00" y="433.00">[libc.so.6..</text>
+</g>
+<g>
+<title>[libc.so.6+0x980a2] (909 samples, 7.69%)</title>
+<rect x = "10.00" y="405.00" width="90.73" height="15.00" fill="rgb(243,69,0)" rx="2" ry="2"/>
+<text x="13.00" y="417.00">[libc.so.6..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x293b4a] (53 samples, 0.45%)</title>
+<rect x = "95.44" y="389.00" width="5.29" height="15.00" fill="rgb(228,192,37)" rx="2" ry="2"/>
+<text x="98.44" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b541] (3 samples, 0.03%)</title>
+<rect x = "100.83" y="421.00" width="0.30" height="15.00" fill="rgb(223,101,19)" rx="2" ry="2"/>
+<text x="103.83" y="433.00"></text>
+</g>
+<g>
+<title>AtomicBool::transInt8ToBool(Int8) (6 samples, 0.05%)</title>
+<rect x = "101.13" y="341.00" width="0.60" height="15.00" fill="rgb(232,13,15)" rx="2" ry="2"/>
+<text x="104.13" y="353.00"></text>
+</g>
+<g>
+<title>BufferedWriter::flush(std.net::TcpSocket) (6 samples, 0.05%)</title>
+<rect x = "101.73" y="341.00" width="0.60" height="15.00" fill="rgb(231,94,37)" rx="2" ry="2"/>
+<text x="104.73" y="353.00"></text>
+</g>
+<g>
+<title>RequestCtx::reset() (2 samples, 0.02%)</title>
+<rect x = "102.33" y="341.00" width="0.20" height="15.00" fill="rgb(211,202,49)" rx="2" ry="2"/>
+<text x="105.33" y="353.00"></text>
+</g>
+<g>
+<title>DopraTcpSocketImpl::read(std.core::Array&lt;UInt8&gt;, std.core::Option&lt;std.core::Duration&gt;) (2 samples, 0.02%)</title>
+<rect x = "136.66" y="309.00" width="0.20" height="15.00" fill="rgb(225,95,42)" rx="2" ry="2"/>
+<text x="139.66" y="321.00"></text>
+</g>
+<g>
+<title>SocketHolder&lt;std.net::DopraTcpSocketImpl&gt;::startReading() (4 samples, 0.03%)</title>
+<rect x = "136.96" y="309.00" width="0.40" height="15.00" fill="rgb(243,17,25)" rx="2" ry="2"/>
+<text x="139.96" y="321.00"></text>
+</g>
+<g>
+<title>CPointer::+(Int64) (30 samples, 0.25%)</title>
+<rect x = "145.05" y="277.00" width="2.99" height="15.00" fill="rgb(243,185,0)" rx="2" ry="2"/>
+<text x="148.05" y="289.00"></text>
+</g>
+<g>
+<title>CPointer::-(Int64) (9 samples, 0.08%)</title>
+<rect x = "148.04" y="277.00" width="0.90" height="15.00" fill="rgb(231,34,44)" rx="2" ry="2"/>
+<text x="151.04" y="289.00"></text>
+</g>
+<g>
+<title>CPointerHandle&lt;T0&gt;::init(CPointer&lt;T0&gt;, std.core::Array&lt;T0&gt;) (15 samples, 0.13%)</title>
+<rect x = "148.94" y="277.00" width="1.50" height="15.00" fill="rgb(228,65,33)" rx="2" ry="2"/>
+<text x="151.94" y="289.00"></text>
+</g>
+<g>
+<title>CJ_MRT_SockRecvNonBlock (2 samples, 0.02%)</title>
+<rect x = "165.01" y="261.00" width="0.20" height="15.00" fill="rgb(235,20,32)" rx="2" ry="2"/>
+<text x="168.01" y="273.00"></text>
+</g>
+<g>
+<title>CPointer::-(Int64) (109 samples, 0.92%)</title>
+<rect x = "165.31" y="261.00" width="10.88" height="15.00" fill="rgb(222,138,38)" rx="2" ry="2"/>
+<text x="168.31" y="273.00"></text>
+</g>
+<g>
+<title>CPointerHandle&lt;T0&gt;::init(CPointer&lt;T0&gt;, std.core::Array&lt;T0&gt;) (23 samples, 0.19%)</title>
+<rect x = "176.19" y="261.00" width="2.30" height="15.00" fill="rgb(239,205,1)" rx="2" ry="2"/>
+<text x="179.19" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21b8fe] (2 samples, 0.02%)</title>
+<rect x = "178.29" y="245.00" width="0.20" height="15.00" fill="rgb(229,101,13)" rx="2" ry="2"/>
+<text x="181.29" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22c1df] (2 samples, 0.02%)</title>
+<rect x = "178.29" y="229.00" width="0.20" height="15.00" fill="rgb(231,189,0)" rx="2" ry="2"/>
+<text x="181.29" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22d0f6] (2 samples, 0.02%)</title>
+<rect x = "178.29" y="213.00" width="0.20" height="15.00" fill="rgb(242,200,28)" rx="2" ry="2"/>
+<text x="181.29" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22c2d6] (2 samples, 0.02%)</title>
+<rect x = "178.29" y="197.00" width="0.20" height="15.00" fill="rgb(251,118,10)" rx="2" ry="2"/>
+<text x="181.29" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20b943] (2 samples, 0.02%)</title>
+<rect x = "178.29" y="181.00" width="0.20" height="15.00" fill="rgb(211,46,12)" rx="2" ry="2"/>
+<text x="181.29" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23eab5] (2 samples, 0.02%)</title>
+<rect x = "178.29" y="165.00" width="0.20" height="15.00" fill="rgb(206,205,8)" rx="2" ry="2"/>
+<text x="181.29" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262032] (2 samples, 0.02%)</title>
+<rect x = "178.29" y="149.00" width="0.20" height="15.00" fill="rgb(252,168,8)" rx="2" ry="2"/>
+<text x="181.29" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x24122a] (2 samples, 0.02%)</title>
+<rect x = "178.29" y="133.00" width="0.20" height="15.00" fill="rgb(205,39,18)" rx="2" ry="2"/>
+<text x="181.29" y="145.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x24156c] (2 samples, 0.02%)</title>
+<rect x = "178.29" y="117.00" width="0.20" height="15.00" fill="rgb(244,118,19)" rx="2" ry="2"/>
+<text x="181.29" y="129.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22d9c6] (2 samples, 0.02%)</title>
+<rect x = "178.29" y="101.00" width="0.20" height="15.00" fill="rgb(212,92,39)" rx="2" ry="2"/>
+<text x="181.29" y="113.00"></text>
+</g>
+<g>
+<title>operator new(unsigned long) (2 samples, 0.02%)</title>
+<rect x = "178.29" y="85.00" width="0.20" height="15.00" fill="rgb(226,198,38)" rx="2" ry="2"/>
+<text x="181.29" y="97.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2025e3] (2 samples, 0.02%)</title>
+<rect x = "178.69" y="261.00" width="0.20" height="15.00" fill="rgb(234,226,34)" rx="2" ry="2"/>
+<text x="181.69" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20261a] (5 samples, 0.04%)</title>
+<rect x = "179.38" y="261.00" width="0.50" height="15.00" fill="rgb(236,14,49)" rx="2" ry="2"/>
+<text x="182.38" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20261e] (9 samples, 0.08%)</title>
+<rect x = "179.88" y="261.00" width="0.90" height="15.00" fill="rgb(244,80,44)" rx="2" ry="2"/>
+<text x="182.88" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x202644] (7 samples, 0.06%)</title>
+<rect x = "180.78" y="261.00" width="0.70" height="15.00" fill="rgb(211,199,28)" rx="2" ry="2"/>
+<text x="183.78" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x280fc8] (3 samples, 0.03%)</title>
+<rect x = "181.18" y="245.00" width="0.30" height="15.00" fill="rgb(243,130,48)" rx="2" ry="2"/>
+<text x="184.18" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2026a2] (3 samples, 0.03%)</title>
+<rect x = "181.68" y="261.00" width="0.30" height="15.00" fill="rgb(212,60,8)" rx="2" ry="2"/>
+<text x="184.68" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2026ab] (42 samples, 0.36%)</title>
+<rect x = "181.98" y="261.00" width="4.19" height="15.00" fill="rgb(207,22,19)" rx="2" ry="2"/>
+<text x="184.98" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2026b7] (10 samples, 0.08%)</title>
+<rect x = "186.17" y="261.00" width="1.00" height="15.00" fill="rgb(253,112,8)" rx="2" ry="2"/>
+<text x="189.17" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2026bc] (4 samples, 0.03%)</title>
+<rect x = "187.17" y="261.00" width="0.40" height="15.00" fill="rgb(217,199,22)" rx="2" ry="2"/>
+<text x="190.17" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2026c1] (20 samples, 0.17%)</title>
+<rect x = "187.57" y="261.00" width="2.00" height="15.00" fill="rgb(228,200,36)" rx="2" ry="2"/>
+<text x="190.57" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x206720] (2 samples, 0.02%)</title>
+<rect x = "189.76" y="261.00" width="0.20" height="15.00" fill="rgb(213,111,4)" rx="2" ry="2"/>
+<text x="192.76" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a687] (3 samples, 0.03%)</title>
+<rect x = "190.26" y="261.00" width="0.30" height="15.00" fill="rgb(228,3,3)" rx="2" ry="2"/>
+<text x="193.26" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a69f] (3 samples, 0.03%)</title>
+<rect x = "190.76" y="261.00" width="0.30" height="15.00" fill="rgb(244,102,36)" rx="2" ry="2"/>
+<text x="193.76" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a6ac] (3 samples, 0.03%)</title>
+<rect x = "191.06" y="261.00" width="0.30" height="15.00" fill="rgb(251,1,30)" rx="2" ry="2"/>
+<text x="194.06" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a6b1] (2 samples, 0.02%)</title>
+<rect x = "191.36" y="261.00" width="0.20" height="15.00" fill="rgb(234,79,27)" rx="2" ry="2"/>
+<text x="194.36" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a6c9] (2 samples, 0.02%)</title>
+<rect x = "191.66" y="261.00" width="0.20" height="15.00" fill="rgb(224,78,17)" rx="2" ry="2"/>
+<text x="194.66" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a6e1] (2 samples, 0.02%)</title>
+<rect x = "191.96" y="261.00" width="0.20" height="15.00" fill="rgb(242,63,7)" rx="2" ry="2"/>
+<text x="194.96" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b540] (7 samples, 0.06%)</title>
+<rect x = "192.16" y="245.00" width="0.70" height="15.00" fill="rgb(222,53,54)" rx="2" ry="2"/>
+<text x="195.16" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b541] (4 samples, 0.03%)</title>
+<rect x = "192.86" y="245.00" width="0.40" height="15.00" fill="rgb(232,55,18)" rx="2" ry="2"/>
+<text x="195.86" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b545] (6 samples, 0.05%)</title>
+<rect x = "193.26" y="245.00" width="0.60" height="15.00" fill="rgb(254,210,41)" rx="2" ry="2"/>
+<text x="196.26" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2009e0] (3 samples, 0.03%)</title>
+<rect x = "194.26" y="229.00" width="0.30" height="15.00" fill="rgb(217,29,37)" rx="2" ry="2"/>
+<text x="197.26" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x231b94] (13 samples, 0.11%)</title>
+<rect x = "194.56" y="229.00" width="1.30" height="15.00" fill="rgb(247,194,37)" rx="2" ry="2"/>
+<text x="197.56" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a81] (32 samples, 0.27%)</title>
+<rect x = "194.16" y="245.00" width="3.19" height="15.00" fill="rgb(232,83,40)" rx="2" ry="2"/>
+<text x="197.16" y="257.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (15 samples, 0.13%)</title>
+<rect x = "195.85" y="229.00" width="1.50" height="15.00" fill="rgb(218,79,3)" rx="2" ry="2"/>
+<text x="198.85" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a85] (9 samples, 0.08%)</title>
+<rect x = "197.35" y="245.00" width="0.90" height="15.00" fill="rgb(215,130,32)" rx="2" ry="2"/>
+<text x="200.35" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a88] (4 samples, 0.03%)</title>
+<rect x = "198.25" y="245.00" width="0.40" height="15.00" fill="rgb(225,211,43)" rx="2" ry="2"/>
+<text x="201.25" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a8d] (18 samples, 0.15%)</title>
+<rect x = "198.65" y="245.00" width="1.80" height="15.00" fill="rgb(244,31,43)" rx="2" ry="2"/>
+<text x="201.65" y="257.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (18 samples, 0.15%)</title>
+<rect x = "198.65" y="229.00" width="1.80" height="15.00" fill="rgb(226,220,51)" rx="2" ry="2"/>
+<text x="201.65" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a91] (7 samples, 0.06%)</title>
+<rect x = "200.44" y="245.00" width="0.70" height="15.00" fill="rgb(210,207,18)" rx="2" ry="2"/>
+<text x="203.44" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a6e6] (178 samples, 1.51%)</title>
+<rect x = "192.16" y="261.00" width="17.77" height="15.00" fill="rgb(206,118,38)" rx="2" ry="2"/>
+<text x="195.16" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a9a] (87 samples, 0.74%)</title>
+<rect x = "201.24" y="245.00" width="8.68" height="15.00" fill="rgb(234,21,14)" rx="2" ry="2"/>
+<text x="204.24" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x243770] (5 samples, 0.04%)</title>
+<rect x = "210.13" y="245.00" width="0.50" height="15.00" fill="rgb(221,175,48)" rx="2" ry="2"/>
+<text x="213.13" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x24367c] (2 samples, 0.02%)</title>
+<rect x = "210.83" y="229.00" width="0.20" height="15.00" fill="rgb(254,2,54)" rx="2" ry="2"/>
+<text x="213.83" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x24377c] (4 samples, 0.03%)</title>
+<rect x = "210.73" y="245.00" width="0.40" height="15.00" fill="rgb(221,78,20)" rx="2" ry="2"/>
+<text x="213.73" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x24378e] (13 samples, 0.11%)</title>
+<rect x = "211.13" y="245.00" width="1.30" height="15.00" fill="rgb(229,140,31)" rx="2" ry="2"/>
+<text x="214.13" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a707] (28 samples, 0.24%)</title>
+<rect x = "209.93" y="261.00" width="2.79" height="15.00" fill="rgb(218,90,39)" rx="2" ry="2"/>
+<text x="212.93" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x243793] (3 samples, 0.03%)</title>
+<rect x = "212.42" y="245.00" width="0.30" height="15.00" fill="rgb(248,120,25)" rx="2" ry="2"/>
+<text x="215.42" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a714] (2 samples, 0.02%)</title>
+<rect x = "212.72" y="261.00" width="0.20" height="15.00" fill="rgb(221,153,50)" rx="2" ry="2"/>
+<text x="215.72" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a729] (2 samples, 0.02%)</title>
+<rect x = "212.92" y="261.00" width="0.20" height="15.00" fill="rgb(237,171,54)" rx="2" ry="2"/>
+<text x="215.92" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a741] (4 samples, 0.03%)</title>
+<rect x = "213.12" y="261.00" width="0.40" height="15.00" fill="rgb(212,142,18)" rx="2" ry="2"/>
+<text x="216.12" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a75e] (32 samples, 0.27%)</title>
+<rect x = "213.62" y="261.00" width="3.19" height="15.00" fill="rgb(216,71,6)" rx="2" ry="2"/>
+<text x="216.62" y="273.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0xa0952] (2429 samples, 20.55%)</title>
+<rect x = "252.65" y="213.00" width="242.45" height="15.00" fill="rgb(212,69,36)" rx="2" ry="2"/>
+<text x="255.65" y="225.00">[libc.so.6+0xa0952]</text>
+</g>
+<g>
+<title>__recv (271 samples, 2.29%)</title>
+<rect x = "495.10" y="213.00" width="27.05" height="15.00" fill="rgb(223,140,30)" rx="2" ry="2"/>
+<text x="498.10" y="225.00">_..</text>
+</g>
+<g>
+<title>CJ_MRT_SockRecvNonBlockGeneral (2930 samples, 24.78%)</title>
+<rect x = "229.89" y="229.00" width="292.45" height="15.00" fill="rgb(237,58,38)" rx="2" ry="2"/>
+<text x="232.89" y="241.00">CJ_MRT_SockRecvNonBlockGeneral</text>
+</g>
+<g>
+<title>__tls_get_addr (2 samples, 0.02%)</title>
+<rect x = "522.15" y="213.00" width="0.20" height="15.00" fill="rgb(252,54,9)" rx="2" ry="2"/>
+<text x="525.15" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b540] (2 samples, 0.02%)</title>
+<rect x = "522.34" y="229.00" width="0.20" height="15.00" fill="rgb(250,110,11)" rx="2" ry="2"/>
+<text x="525.34" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b545] (5 samples, 0.04%)</title>
+<rect x = "522.64" y="229.00" width="0.50" height="15.00" fill="rgb(252,73,21)" rx="2" ry="2"/>
+<text x="525.64" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d5be] (3 samples, 0.03%)</title>
+<rect x = "523.24" y="229.00" width="0.30" height="15.00" fill="rgb(242,42,7)" rx="2" ry="2"/>
+<text x="526.24" y="241.00"></text>
+</g>
+<g>
+<title>[main+0xb4730] (2 samples, 0.02%)</title>
+<rect x = "523.64" y="229.00" width="0.20" height="15.00" fill="rgb(245,166,48)" rx="2" ry="2"/>
+<text x="526.64" y="241.00"></text>
+</g>
+<g>
+<title>__errno_location (38 samples, 0.32%)</title>
+<rect x = "523.84" y="229.00" width="3.79" height="15.00" fill="rgb(234,174,27)" rx="2" ry="2"/>
+<text x="526.84" y="241.00"></text>
+</g>
+<g>
+<title>__recv (18 samples, 0.15%)</title>
+<rect x = "527.63" y="229.00" width="1.80" height="15.00" fill="rgb(214,177,53)" rx="2" ry="2"/>
+<text x="530.63" y="241.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (8 samples, 0.07%)</title>
+<rect x = "529.43" y="229.00" width="0.80" height="15.00" fill="rgb(245,204,14)" rx="2" ry="2"/>
+<text x="532.43" y="241.00"></text>
+</g>
+<g>
+<title>CJ_MRT_SockRecvNonBlock (5115 samples, 43.27%)</title>
+<rect x = "216.91" y="245.00" width="510.55" height="15.00" fill="rgb(223,122,17)" rx="2" ry="2"/>
+<text x="219.91" y="257.00">CJ_MRT_SockRecvNonBlock</text>
+</g>
+<g>
+<title>sched_yield (1976 samples, 16.71%)</title>
+<rect x = "530.23" y="229.00" width="197.23" height="15.00" fill="rgb(224,146,45)" rx="2" ry="2"/>
+<text x="533.23" y="241.00">sched_yield</text>
+</g>
+<g>
+<title>CJ_MRT_SockRecvNonBlockGeneral (4 samples, 0.03%)</title>
+<rect x = "727.46" y="245.00" width="0.40" height="15.00" fill="rgb(212,126,35)" rx="2" ry="2"/>
+<text x="730.46" y="257.00"></text>
+</g>
+<g>
+<title>CJ_SockErrnoGet (7 samples, 0.06%)</title>
+<rect x = "727.86" y="245.00" width="0.70" height="15.00" fill="rgb(253,93,47)" rx="2" ry="2"/>
+<text x="730.86" y="257.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (3 samples, 0.03%)</title>
+<rect x = "728.26" y="229.00" width="0.30" height="15.00" fill="rgb(215,30,40)" rx="2" ry="2"/>
+<text x="731.26" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b540] (49 samples, 0.41%)</title>
+<rect x = "728.56" y="245.00" width="4.89" height="15.00" fill="rgb(238,198,32)" rx="2" ry="2"/>
+<text x="731.56" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b541] (4 samples, 0.03%)</title>
+<rect x = "733.45" y="245.00" width="0.40" height="15.00" fill="rgb(245,28,6)" rx="2" ry="2"/>
+<text x="736.45" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d550] (10 samples, 0.08%)</title>
+<rect x = "733.95" y="245.00" width="1.00" height="15.00" fill="rgb(245,89,5)" rx="2" ry="2"/>
+<text x="736.95" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a796] (5192 samples, 43.92%)</title>
+<rect x = "216.81" y="261.00" width="518.23" height="15.00" fill="rgb(237,139,42)" rx="2" ry="2"/>
+<text x="219.81" y="273.00">[libcangjie-runtime.so+0x21a796]</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a79a] (20 samples, 0.17%)</title>
+<rect x = "735.05" y="261.00" width="2.00" height="15.00" fill="rgb(252,99,8)" rx="2" ry="2"/>
+<text x="738.05" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b545] (7 samples, 0.06%)</title>
+<rect x = "737.14" y="245.00" width="0.70" height="15.00" fill="rgb(207,180,8)" rx="2" ry="2"/>
+<text x="740.14" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437aa] (3 samples, 0.03%)</title>
+<rect x = "738.04" y="245.00" width="0.30" height="15.00" fill="rgb(254,119,39)" rx="2" ry="2"/>
+<text x="741.04" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437b2] (29 samples, 0.25%)</title>
+<rect x = "738.34" y="245.00" width="2.89" height="15.00" fill="rgb(211,28,0)" rx="2" ry="2"/>
+<text x="741.34" y="257.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (28 samples, 0.24%)</title>
+<rect x = "738.44" y="229.00" width="2.79" height="15.00" fill="rgb(251,49,19)" rx="2" ry="2"/>
+<text x="741.44" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437ba] (2 samples, 0.02%)</title>
+<rect x = "741.34" y="245.00" width="0.20" height="15.00" fill="rgb(243,139,11)" rx="2" ry="2"/>
+<text x="744.34" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437be] (13 samples, 0.11%)</title>
+<rect x = "741.54" y="245.00" width="1.30" height="15.00" fill="rgb(231,124,29)" rx="2" ry="2"/>
+<text x="744.54" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437cb] (22 samples, 0.19%)</title>
+<rect x = "742.93" y="245.00" width="2.20" height="15.00" fill="rgb(230,125,29)" rx="2" ry="2"/>
+<text x="745.93" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437da] (18 samples, 0.15%)</title>
+<rect x = "745.23" y="245.00" width="1.80" height="15.00" fill="rgb(226,17,24)" rx="2" ry="2"/>
+<text x="748.23" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437e0] (4 samples, 0.03%)</title>
+<rect x = "747.03" y="245.00" width="0.40" height="15.00" fill="rgb(228,140,5)" rx="2" ry="2"/>
+<text x="750.03" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437eb] (3 samples, 0.03%)</title>
+<rect x = "747.43" y="245.00" width="0.30" height="15.00" fill="rgb(245,137,46)" rx="2" ry="2"/>
+<text x="750.43" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x243802] (29 samples, 0.25%)</title>
+<rect x = "747.72" y="245.00" width="2.89" height="15.00" fill="rgb(239,79,6)" rx="2" ry="2"/>
+<text x="750.72" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x243657] (29 samples, 0.25%)</title>
+<rect x = "747.72" y="229.00" width="2.89" height="15.00" fill="rgb(227,140,12)" rx="2" ry="2"/>
+<text x="750.72" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a7bb] (140 samples, 1.18%)</title>
+<rect x = "737.04" y="261.00" width="13.97" height="15.00" fill="rgb(243,17,6)" rx="2" ry="2"/>
+<text x="740.04" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a7c3] (4 samples, 0.03%)</title>
+<rect x = "751.02" y="261.00" width="0.40" height="15.00" fill="rgb(236,125,25)" rx="2" ry="2"/>
+<text x="754.02" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a7dd] (8 samples, 0.07%)</title>
+<rect x = "751.42" y="261.00" width="0.80" height="15.00" fill="rgb(252,116,26)" rx="2" ry="2"/>
+<text x="754.42" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a7e5] (7 samples, 0.06%)</title>
+<rect x = "752.32" y="261.00" width="0.70" height="15.00" fill="rgb(238,62,30)" rx="2" ry="2"/>
+<text x="755.32" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a7f0] (2 samples, 0.02%)</title>
+<rect x = "753.11" y="261.00" width="0.20" height="15.00" fill="rgb(235,39,32)" rx="2" ry="2"/>
+<text x="756.11" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x206764] (25 samples, 0.21%)</title>
+<rect x = "754.21" y="245.00" width="2.50" height="15.00" fill="rgb(229,83,25)" rx="2" ry="2"/>
+<text x="757.21" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x206770] (14 samples, 0.12%)</title>
+<rect x = "756.91" y="245.00" width="1.40" height="15.00" fill="rgb(205,136,35)" rx="2" ry="2"/>
+<text x="759.91" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x206774] (6 samples, 0.05%)</title>
+<rect x = "758.30" y="245.00" width="0.60" height="15.00" fill="rgb(222,49,34)" rx="2" ry="2"/>
+<text x="761.30" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x206779] (2 samples, 0.02%)</title>
+<rect x = "758.90" y="245.00" width="0.20" height="15.00" fill="rgb(219,25,51)" rx="2" ry="2"/>
+<text x="761.90" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b540] (3 samples, 0.03%)</title>
+<rect x = "759.30" y="229.00" width="0.30" height="15.00" fill="rgb(217,89,46)" rx="2" ry="2"/>
+<text x="762.30" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x231b95] (2 samples, 0.02%)</title>
+<rect x = "759.70" y="229.00" width="0.20" height="15.00" fill="rgb(235,157,40)" rx="2" ry="2"/>
+<text x="762.70" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283b75] (3 samples, 0.03%)</title>
+<rect x = "759.90" y="229.00" width="0.30" height="15.00" fill="rgb(231,28,26)" rx="2" ry="2"/>
+<text x="762.90" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283b7f] (4 samples, 0.03%)</title>
+<rect x = "760.20" y="229.00" width="0.40" height="15.00" fill="rgb(208,25,37)" rx="2" ry="2"/>
+<text x="763.20" y="241.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (4 samples, 0.03%)</title>
+<rect x = "760.20" y="213.00" width="0.40" height="15.00" fill="rgb(224,81,46)" rx="2" ry="2"/>
+<text x="763.20" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283b83] (7 samples, 0.06%)</title>
+<rect x = "760.60" y="229.00" width="0.70" height="15.00" fill="rgb(216,31,17)" rx="2" ry="2"/>
+<text x="763.60" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283b8e] (6 samples, 0.05%)</title>
+<rect x = "761.30" y="229.00" width="0.60" height="15.00" fill="rgb(224,167,25)" rx="2" ry="2"/>
+<text x="764.30" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067ad] (29 samples, 0.25%)</title>
+<rect x = "759.20" y="245.00" width="2.89" height="15.00" fill="rgb(241,218,49)" rx="2" ry="2"/>
+<text x="762.20" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283bd6] (2 samples, 0.02%)</title>
+<rect x = "761.90" y="229.00" width="0.20" height="15.00" fill="rgb(248,125,33)" rx="2" ry="2"/>
+<text x="764.90" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b5b9] (9 samples, 0.08%)</title>
+<rect x = "762.10" y="229.00" width="0.90" height="15.00" fill="rgb(242,121,28)" rx="2" ry="2"/>
+<text x="765.10" y="241.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (9 samples, 0.08%)</title>
+<rect x = "762.10" y="213.00" width="0.90" height="15.00" fill="rgb(228,24,42)" rx="2" ry="2"/>
+<text x="765.10" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b5bd] (7 samples, 0.06%)</title>
+<rect x = "763.00" y="229.00" width="0.70" height="15.00" fill="rgb(207,84,4)" rx="2" ry="2"/>
+<text x="766.00" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067b2] (18 samples, 0.15%)</title>
+<rect x = "762.10" y="245.00" width="1.80" height="15.00" fill="rgb(232,2,0)" rx="2" ry="2"/>
+<text x="765.10" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067b8] (2 samples, 0.02%)</title>
+<rect x = "763.89" y="245.00" width="0.20" height="15.00" fill="rgb(205,155,47)" rx="2" ry="2"/>
+<text x="766.89" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067be] (5 samples, 0.04%)</title>
+<rect x = "764.09" y="245.00" width="0.50" height="15.00" fill="rgb(212,26,48)" rx="2" ry="2"/>
+<text x="767.09" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067c3] (4 samples, 0.03%)</title>
+<rect x = "764.59" y="245.00" width="0.40" height="15.00" fill="rgb(235,199,6)" rx="2" ry="2"/>
+<text x="767.59" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067d1] (3 samples, 0.03%)</title>
+<rect x = "764.99" y="245.00" width="0.30" height="15.00" fill="rgb(248,208,19)" rx="2" ry="2"/>
+<text x="767.99" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x274edb] (3 samples, 0.03%)</title>
+<rect x = "765.59" y="229.00" width="0.30" height="15.00" fill="rgb(225,6,42)" rx="2" ry="2"/>
+<text x="768.59" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x274f30] (26 samples, 0.22%)</title>
+<rect x = "765.99" y="229.00" width="2.60" height="15.00" fill="rgb(239,159,54)" rx="2" ry="2"/>
+<text x="768.99" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x274f3a] (7 samples, 0.06%)</title>
+<rect x = "768.69" y="229.00" width="0.70" height="15.00" fill="rgb(232,17,6)" rx="2" ry="2"/>
+<text x="771.69" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x274f3d] (3 samples, 0.03%)</title>
+<rect x = "769.38" y="229.00" width="0.30" height="15.00" fill="rgb(240,152,42)" rx="2" ry="2"/>
+<text x="772.38" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2750f1] (24 samples, 0.20%)</title>
+<rect x = "769.78" y="213.00" width="2.40" height="15.00" fill="rgb(237,16,36)" rx="2" ry="2"/>
+<text x="772.78" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x274f42] (27 samples, 0.23%)</title>
+<rect x = "769.68" y="229.00" width="2.70" height="15.00" fill="rgb(214,184,23)" rx="2" ry="2"/>
+<text x="772.68" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x274f47] (2 samples, 0.02%)</title>
+<rect x = "772.38" y="229.00" width="0.20" height="15.00" fill="rgb(251,26,15)" rx="2" ry="2"/>
+<text x="775.38" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x27506c] (2 samples, 0.02%)</title>
+<rect x = "772.88" y="229.00" width="0.20" height="15.00" fill="rgb(243,184,38)" rx="2" ry="2"/>
+<text x="775.88" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2750e0] (4 samples, 0.03%)</title>
+<rect x = "773.08" y="229.00" width="0.40" height="15.00" fill="rgb(229,96,12)" rx="2" ry="2"/>
+<text x="776.08" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067e6] (83 samples, 0.70%)</title>
+<rect x = "765.39" y="245.00" width="8.28" height="15.00" fill="rgb(235,131,13)" rx="2" ry="2"/>
+<text x="768.39" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x275103] (2 samples, 0.02%)</title>
+<rect x = "773.48" y="229.00" width="0.20" height="15.00" fill="rgb(239,142,9)" rx="2" ry="2"/>
+<text x="776.48" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067fe] (3 samples, 0.03%)</title>
+<rect x = "773.88" y="245.00" width="0.30" height="15.00" fill="rgb(243,68,24)" rx="2" ry="2"/>
+<text x="776.88" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x206803] (2 samples, 0.02%)</title>
+<rect x = "774.28" y="245.00" width="0.20" height="15.00" fill="rgb(213,156,23)" rx="2" ry="2"/>
+<text x="777.28" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fd40] (2 samples, 0.02%)</title>
+<rect x = "774.47" y="245.00" width="0.20" height="15.00" fill="rgb(216,3,2)" rx="2" ry="2"/>
+<text x="777.47" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fd52] (3 samples, 0.03%)</title>
+<rect x = "774.67" y="245.00" width="0.30" height="15.00" fill="rgb(213,28,9)" rx="2" ry="2"/>
+<text x="777.67" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x229371] (8 samples, 0.07%)</title>
+<rect x = "775.07" y="245.00" width="0.80" height="15.00" fill="rgb(236,59,15)" rx="2" ry="2"/>
+<text x="778.07" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22937c] (6 samples, 0.05%)</title>
+<rect x = "775.87" y="245.00" width="0.60" height="15.00" fill="rgb(209,125,46)" rx="2" ry="2"/>
+<text x="778.87" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2293c0] (36 samples, 0.30%)</title>
+<rect x = "776.47" y="245.00" width="3.59" height="15.00" fill="rgb(241,153,17)" rx="2" ry="2"/>
+<text x="779.47" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2293c1] (3 samples, 0.03%)</title>
+<rect x = "780.06" y="245.00" width="0.30" height="15.00" fill="rgb(251,127,16)" rx="2" ry="2"/>
+<text x="783.06" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b5b0] (2 samples, 0.02%)</title>
+<rect x = "780.36" y="245.00" width="0.20" height="15.00" fill="rgb(248,78,17)" rx="2" ry="2"/>
+<text x="783.36" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b5c3] (2 samples, 0.02%)</title>
+<rect x = "780.66" y="245.00" width="0.20" height="15.00" fill="rgb(208,74,21)" rx="2" ry="2"/>
+<text x="783.66" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273cb0] (16 samples, 0.14%)</title>
+<rect x = "780.86" y="245.00" width="1.60" height="15.00" fill="rgb(213,203,35)" rx="2" ry="2"/>
+<text x="783.86" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273cb1] (3 samples, 0.03%)</title>
+<rect x = "782.46" y="245.00" width="0.30" height="15.00" fill="rgb(209,31,23)" rx="2" ry="2"/>
+<text x="785.46" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x280d17] (2 samples, 0.02%)</title>
+<rect x = "783.06" y="245.00" width="0.20" height="15.00" fill="rgb(234,174,26)" rx="2" ry="2"/>
+<text x="786.06" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21ae61] (299 samples, 2.53%)</title>
+<rect x = "753.71" y="261.00" width="29.84" height="15.00" fill="rgb(211,162,6)" rx="2" ry="2"/>
+<text x="756.71" y="273.00">[l..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x280d26] (2 samples, 0.02%)</title>
+<rect x = "783.36" y="245.00" width="0.20" height="15.00" fill="rgb(247,113,35)" rx="2" ry="2"/>
+<text x="786.36" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21ae6a] (10 samples, 0.08%)</title>
+<rect x = "783.56" y="261.00" width="1.00" height="15.00" fill="rgb(219,29,45)" rx="2" ry="2"/>
+<text x="786.56" y="273.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (9 samples, 0.08%)</title>
+<rect x = "783.66" y="245.00" width="0.90" height="15.00" fill="rgb(228,197,29)" rx="2" ry="2"/>
+<text x="786.66" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21ae81] (3 samples, 0.03%)</title>
+<rect x = "784.76" y="261.00" width="0.30" height="15.00" fill="rgb(230,183,8)" rx="2" ry="2"/>
+<text x="787.76" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b540] (6 samples, 0.05%)</title>
+<rect x = "785.25" y="261.00" width="0.60" height="15.00" fill="rgb(211,186,3)" rx="2" ry="2"/>
+<text x="788.25" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b545] (5 samples, 0.04%)</title>
+<rect x = "785.85" y="261.00" width="0.50" height="15.00" fill="rgb(216,122,33)" rx="2" ry="2"/>
+<text x="788.85" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x243760] (3 samples, 0.03%)</title>
+<rect x = "786.35" y="261.00" width="0.30" height="15.00" fill="rgb(212,60,16)" rx="2" ry="2"/>
+<text x="789.35" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437a0] (3 samples, 0.03%)</title>
+<rect x = "786.65" y="261.00" width="0.30" height="15.00" fill="rgb(237,96,49)" rx="2" ry="2"/>
+<text x="789.65" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x280fc1] (3 samples, 0.03%)</title>
+<rect x = "787.15" y="261.00" width="0.30" height="15.00" fill="rgb(220,115,28)" rx="2" ry="2"/>
+<text x="790.15" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a70] (6 samples, 0.05%)</title>
+<rect x = "787.45" y="261.00" width="0.60" height="15.00" fill="rgb(249,73,50)" rx="2" ry="2"/>
+<text x="790.45" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283be4] (2 samples, 0.02%)</title>
+<rect x = "788.05" y="261.00" width="0.20" height="15.00" fill="rgb(205,86,15)" rx="2" ry="2"/>
+<text x="791.05" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283bef] (5 samples, 0.04%)</title>
+<rect x = "788.45" y="261.00" width="0.50" height="15.00" fill="rgb(253,42,1)" rx="2" ry="2"/>
+<text x="791.45" y="273.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (5 samples, 0.04%)</title>
+<rect x = "788.45" y="245.00" width="0.50" height="15.00" fill="rgb(233,165,23)" rx="2" ry="2"/>
+<text x="791.45" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283bfe] (3 samples, 0.03%)</title>
+<rect x = "788.95" y="261.00" width="0.30" height="15.00" fill="rgb(239,81,51)" rx="2" ry="2"/>
+<text x="791.95" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283c0a] (2 samples, 0.02%)</title>
+<rect x = "789.45" y="261.00" width="0.20" height="15.00" fill="rgb(245,149,42)" rx="2" ry="2"/>
+<text x="792.45" y="273.00"></text>
+</g>
+<g>
+<title>DopraTcpSocketImpl::readImpl(std.core::Array&lt;UInt8&gt;) (6405 samples, 54.18%)</title>
+<rect x = "150.44" y="277.00" width="639.31" height="15.00" fill="rgb(228,42,39)" rx="2" ry="2"/>
+<text x="153.44" y="289.00">DopraTcpSocketImpl::readImpl(std.core::Array&lt;UInt8&gt;)</text>
+</g>
+<g>
+<title>Int32::Max::get() (3 samples, 0.03%)</title>
+<rect x = "789.75" y="277.00" width="0.30" height="15.00" fill="rgb(228,0,51)" rx="2" ry="2"/>
+<text x="792.75" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a81] (3 samples, 0.03%)</title>
+<rect x = "790.64" y="261.00" width="0.30" height="15.00" fill="rgb(229,124,34)" rx="2" ry="2"/>
+<text x="793.64" y="273.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (2 samples, 0.02%)</title>
+<rect x = "790.74" y="245.00" width="0.20" height="15.00" fill="rgb(243,112,24)" rx="2" ry="2"/>
+<text x="793.74" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a8d] (2 samples, 0.02%)</title>
+<rect x = "790.94" y="261.00" width="0.20" height="15.00" fill="rgb(231,98,40)" rx="2" ry="2"/>
+<text x="793.94" y="273.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (2 samples, 0.02%)</title>
+<rect x = "790.94" y="245.00" width="0.20" height="15.00" fill="rgb(253,208,48)" rx="2" ry="2"/>
+<text x="793.94" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a6e6] (14 samples, 0.12%)</title>
+<rect x = "790.35" y="277.00" width="1.40" height="15.00" fill="rgb(240,76,50)" rx="2" ry="2"/>
+<text x="793.35" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a9a] (5 samples, 0.04%)</title>
+<rect x = "791.24" y="261.00" width="0.50" height="15.00" fill="rgb(246,57,26)" rx="2" ry="2"/>
+<text x="794.24" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a707] (3 samples, 0.03%)</title>
+<rect x = "791.74" y="277.00" width="0.30" height="15.00" fill="rgb(209,171,47)" rx="2" ry="2"/>
+<text x="794.74" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x24378e] (3 samples, 0.03%)</title>
+<rect x = "791.74" y="261.00" width="0.30" height="15.00" fill="rgb(225,121,48)" rx="2" ry="2"/>
+<text x="794.74" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a75e] (3 samples, 0.03%)</title>
+<rect x = "792.04" y="277.00" width="0.30" height="15.00" fill="rgb(240,117,6)" rx="2" ry="2"/>
+<text x="795.04" y="289.00"></text>
+</g>
+<g>
+<title>CJ_SchdfdLock (2 samples, 0.02%)</title>
+<rect x = "793.34" y="245.00" width="0.20" height="15.00" fill="rgb(206,100,38)" rx="2" ry="2"/>
+<text x="796.34" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2916e3] (6 samples, 0.05%)</title>
+<rect x = "802.52" y="213.00" width="0.60" height="15.00" fill="rgb(233,45,27)" rx="2" ry="2"/>
+<text x="805.52" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2916ef] (5 samples, 0.04%)</title>
+<rect x = "803.12" y="213.00" width="0.50" height="15.00" fill="rgb(227,15,26)" rx="2" ry="2"/>
+<text x="806.12" y="225.00"></text>
+</g>
+<g>
+<title>CJ_SchdfdLock (97 samples, 0.82%)</title>
+<rect x = "794.04" y="229.00" width="9.68" height="15.00" fill="rgb(219,54,19)" rx="2" ry="2"/>
+<text x="797.04" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x291773] (15 samples, 0.13%)</title>
+<rect x = "812.00" y="213.00" width="1.50" height="15.00" fill="rgb(214,224,0)" rx="2" ry="2"/>
+<text x="815.00" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x291780] (16 samples, 0.14%)</title>
+<rect x = "813.50" y="213.00" width="1.60" height="15.00" fill="rgb(207,180,16)" rx="2" ry="2"/>
+<text x="816.50" y="225.00"></text>
+</g>
+<g>
+<title>CJ_SchdfdUnlock (115 samples, 0.97%)</title>
+<rect x = "803.72" y="229.00" width="11.48" height="15.00" fill="rgb(212,81,20)" rx="2" ry="2"/>
+<text x="806.72" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2871b3] (3 samples, 0.03%)</title>
+<rect x = "816.80" y="213.00" width="0.30" height="15.00" fill="rgb(253,28,12)" rx="2" ry="2"/>
+<text x="819.80" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2871dc] (2 samples, 0.02%)</title>
+<rect x = "817.10" y="213.00" width="0.20" height="15.00" fill="rgb(207,168,15)" rx="2" ry="2"/>
+<text x="820.10" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b540] (2 samples, 0.02%)</title>
+<rect x = "817.29" y="197.00" width="0.20" height="15.00" fill="rgb(233,33,47)" rx="2" ry="2"/>
+<text x="820.29" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b541] (2 samples, 0.02%)</title>
+<rect x = "817.49" y="197.00" width="0.20" height="15.00" fill="rgb(239,107,5)" rx="2" ry="2"/>
+<text x="820.49" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282a01] (5 samples, 0.04%)</title>
+<rect x = "817.69" y="197.00" width="0.50" height="15.00" fill="rgb(239,185,40)" rx="2" ry="2"/>
+<text x="820.69" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282de2] (3 samples, 0.03%)</title>
+<rect x = "818.39" y="197.00" width="0.30" height="15.00" fill="rgb(211,69,52)" rx="2" ry="2"/>
+<text x="821.39" y="209.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (3 samples, 0.03%)</title>
+<rect x = "818.39" y="181.00" width="0.30" height="15.00" fill="rgb(230,105,41)" rx="2" ry="2"/>
+<text x="821.39" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282de6] (2 samples, 0.02%)</title>
+<rect x = "818.69" y="197.00" width="0.20" height="15.00" fill="rgb(234,136,31)" rx="2" ry="2"/>
+<text x="821.69" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282df9] (7 samples, 0.06%)</title>
+<rect x = "818.89" y="197.00" width="0.70" height="15.00" fill="rgb(229,150,23)" rx="2" ry="2"/>
+<text x="821.89" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282e00] (5 samples, 0.04%)</title>
+<rect x = "819.69" y="197.00" width="0.50" height="15.00" fill="rgb(213,190,31)" rx="2" ry="2"/>
+<text x="822.69" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282e2e] (2 samples, 0.02%)</title>
+<rect x = "820.19" y="197.00" width="0.20" height="15.00" fill="rgb(213,190,24)" rx="2" ry="2"/>
+<text x="823.19" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282e32] (4 samples, 0.03%)</title>
+<rect x = "820.39" y="197.00" width="0.40" height="15.00" fill="rgb(217,135,53)" rx="2" ry="2"/>
+<text x="823.39" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282e36] (10 samples, 0.08%)</title>
+<rect x = "820.79" y="197.00" width="1.00" height="15.00" fill="rgb(213,173,23)" rx="2" ry="2"/>
+<text x="823.79" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282e3d] (7 samples, 0.06%)</title>
+<rect x = "821.79" y="197.00" width="0.70" height="15.00" fill="rgb(227,19,30)" rx="2" ry="2"/>
+<text x="824.79" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282e9b] (2 samples, 0.02%)</title>
+<rect x = "822.59" y="197.00" width="0.20" height="15.00" fill="rgb(232,133,2)" rx="2" ry="2"/>
+<text x="825.59" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282eb6] (27 samples, 0.23%)</title>
+<rect x = "822.88" y="197.00" width="2.70" height="15.00" fill="rgb(254,81,29)" rx="2" ry="2"/>
+<text x="825.88" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d3e2] (5 samples, 0.04%)</title>
+<rect x = "825.78" y="197.00" width="0.50" height="15.00" fill="rgb(232,206,24)" rx="2" ry="2"/>
+<text x="828.78" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d40c] (3 samples, 0.03%)</title>
+<rect x = "826.48" y="197.00" width="0.30" height="15.00" fill="rgb(245,146,3)" rx="2" ry="2"/>
+<text x="829.48" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2871f1] (106 samples, 0.90%)</title>
+<rect x = "817.29" y="213.00" width="10.58" height="15.00" fill="rgb(243,10,25)" rx="2" ry="2"/>
+<text x="820.29" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d485] (9 samples, 0.08%)</title>
+<rect x = "826.98" y="197.00" width="0.90" height="15.00" fill="rgb(211,8,45)" rx="2" ry="2"/>
+<text x="829.98" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2871f3] (6 samples, 0.05%)</title>
+<rect x = "827.88" y="213.00" width="0.60" height="15.00" fill="rgb(243,99,21)" rx="2" ry="2"/>
+<text x="830.88" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2871fe] (27 samples, 0.23%)</title>
+<rect x = "828.47" y="213.00" width="2.69" height="15.00" fill="rgb(242,91,41)" rx="2" ry="2"/>
+<text x="831.47" y="225.00"></text>
+</g>
+<g>
+<title>CJ_SchdfdWaitInlock (161 samples, 1.36%)</title>
+<rect x = "815.20" y="229.00" width="16.07" height="15.00" fill="rgb(232,9,31)" rx="2" ry="2"/>
+<text x="818.20" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d56b] (3 samples, 0.03%)</title>
+<rect x = "831.37" y="229.00" width="0.30" height="15.00" fill="rgb(248,4,10)" rx="2" ry="2"/>
+<text x="834.37" y="241.00"></text>
+</g>
+<g>
+<title>CJ_TcpsockWait (382 samples, 3.23%)</title>
+<rect x = "793.64" y="245.00" width="38.13" height="15.00" fill="rgb(238,141,45)" rx="2" ry="2"/>
+<text x="796.64" y="257.00">CJ_..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d550] (2 samples, 0.02%)</title>
+<rect x = "831.77" y="245.00" width="0.20" height="15.00" fill="rgb(238,41,11)" rx="2" ry="2"/>
+<text x="834.77" y="257.00"></text>
+</g>
+<g>
+<title>CJ_MRT_SockWaitRecvTimeout (401 samples, 3.39%)</title>
+<rect x = "792.34" y="261.00" width="40.03" height="15.00" fill="rgb(217,80,20)" rx="2" ry="2"/>
+<text x="795.34" y="273.00">CJ_..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a796] (408 samples, 3.45%)</title>
+<rect x = "792.34" y="277.00" width="40.72" height="15.00" fill="rgb(243,180,6)" rx="2" ry="2"/>
+<text x="795.34" y="289.00">[li..</text>
+</g>
+<g>
+<title>CJ_TcpsockWaitRecv (7 samples, 0.06%)</title>
+<rect x = "832.37" y="261.00" width="0.70" height="15.00" fill="rgb(226,9,53)" rx="2" ry="2"/>
+<text x="835.37" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a7bb] (4 samples, 0.03%)</title>
+<rect x = "833.07" y="277.00" width="0.40" height="15.00" fill="rgb(222,107,14)" rx="2" ry="2"/>
+<text x="836.07" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a7d5] (5 samples, 0.04%)</title>
+<rect x = "833.66" y="277.00" width="0.50" height="15.00" fill="rgb(239,97,18)" rx="2" ry="2"/>
+<text x="836.66" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a7dd] (2 samples, 0.02%)</title>
+<rect x = "834.16" y="277.00" width="0.20" height="15.00" fill="rgb(227,7,9)" rx="2" ry="2"/>
+<text x="837.16" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a801] (5 samples, 0.04%)</title>
+<rect x = "834.46" y="277.00" width="0.50" height="15.00" fill="rgb(240,4,46)" rx="2" ry="2"/>
+<text x="837.46" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21ae40] (7 samples, 0.06%)</title>
+<rect x = "834.96" y="277.00" width="0.70" height="15.00" fill="rgb(206,157,10)" rx="2" ry="2"/>
+<text x="837.96" y="289.00"></text>
+</g>
+<g>
+<title>DopraTcpSocketImpl::read(std.core::Array&lt;UInt8&gt;, std.core::Option&lt;std.core::Duration&gt;) (6976 samples, 59.01%)</title>
+<rect x = "139.86" y="293.00" width="696.30" height="15.00" fill="rgb(213,113,3)" rx="2" ry="2"/>
+<text x="142.86" y="305.00">DopraTcpSocketImpl::read(std.core::Array&lt;UInt8&gt;, std.core::Option&lt;std.core::Duration&gt;)</text>
+</g>
+<g>
+<title>[main+0xb4600] (3 samples, 0.03%)</title>
+<rect x = "835.86" y="277.00" width="0.30" height="15.00" fill="rgb(243,56,11)" rx="2" ry="2"/>
+<text x="838.86" y="289.00"></text>
+</g>
+<g>
+<title>DopraTcpSocketImpl::readImpl(std.core::Array&lt;UInt8&gt;) (12 samples, 0.10%)</title>
+<rect x = "836.16" y="293.00" width="1.20" height="15.00" fill="rgb(207,188,31)" rx="2" ry="2"/>
+<text x="839.16" y="305.00"></text>
+</g>
+<g>
+<title>SocketHolder&lt;std.net::DopraTcpSocketImpl&gt;::leaveSession(Bool, Bool) (82 samples, 0.69%)</title>
+<rect x = "837.36" y="293.00" width="8.18" height="15.00" fill="rgb(227,188,37)" rx="2" ry="2"/>
+<text x="840.36" y="305.00"></text>
+</g>
+<g>
+<title>BufferedReader::fill(std.net::TcpSocket) (7138 samples, 60.38%)</title>
+<rect x = "134.87" y="325.00" width="712.47" height="15.00" fill="rgb(235,160,33)" rx="2" ry="2"/>
+<text x="137.87" y="337.00">BufferedReader::fill(std.net::TcpSocket)</text>
+</g>
+<g>
+<title>TcpSocket::read(std.core::Array&lt;UInt8&gt;) (7113 samples, 60.17%)</title>
+<rect x = "137.36" y="309.00" width="709.98" height="15.00" fill="rgb(253,189,42)" rx="2" ry="2"/>
+<text x="140.36" y="321.00">TcpSocket::read(std.core::Array&lt;UInt8&gt;)</text>
+</g>
+<g>
+<title>SocketHolder&lt;std.net::DopraTcpSocketImpl&gt;::startReading() (18 samples, 0.15%)</title>
+<rect x = "845.54" y="293.00" width="1.80" height="15.00" fill="rgb(242,5,0)" rx="2" ry="2"/>
+<text x="848.54" y="305.00"></text>
+</g>
+<g>
+<title>CJ_MCC_NewObjectFast (7 samples, 0.06%)</title>
+<rect x = "850.43" y="309.00" width="0.70" height="15.00" fill="rgb(212,128,27)" rx="2" ry="2"/>
+<text x="853.43" y="321.00"></text>
+</g>
+<g>
+<title>SocketHolder&lt;std.net::DopraTcpSocketImpl&gt;::leaveSession(Bool, Bool) (5 samples, 0.04%)</title>
+<rect x = "854.13" y="293.00" width="0.50" height="15.00" fill="rgb(224,133,53)" rx="2" ry="2"/>
+<text x="857.13" y="305.00"></text>
+</g>
+<g>
+<title>DopraTcpSocketImpl::write(std.core::Array&lt;UInt8&gt;, std.core::Option&lt;std.core::Duration&gt;) (3 samples, 0.03%)</title>
+<rect x = "859.12" y="277.00" width="0.30" height="15.00" fill="rgb(235,97,6)" rx="2" ry="2"/>
+<text x="862.12" y="289.00"></text>
+</g>
+<g>
+<title>SocketHolder&lt;std.net::DopraTcpSocketImpl&gt;::leaveSession(Bool, Bool) (31 samples, 0.26%)</title>
+<rect x = "859.42" y="277.00" width="3.09" height="15.00" fill="rgb(222,135,54)" rx="2" ry="2"/>
+<text x="862.42" y="289.00"></text>
+</g>
+<g>
+<title>CPointer::+(Int64) (9 samples, 0.08%)</title>
+<rect x = "868.80" y="245.00" width="0.90" height="15.00" fill="rgb(210,186,22)" rx="2" ry="2"/>
+<text x="871.80" y="257.00"></text>
+</g>
+<g>
+<title>CPointerHandle&lt;T0&gt;::init(CPointer&lt;T0&gt;, std.core::Array&lt;T0&gt;) (2 samples, 0.02%)</title>
+<rect x = "869.80" y="245.00" width="0.20" height="15.00" fill="rgb(254,198,20)" rx="2" ry="2"/>
+<text x="872.80" y="257.00"></text>
+</g>
+<g>
+<title>CPointer::-(Int64) (40 samples, 0.34%)</title>
+<rect x = "871.49" y="229.00" width="3.99" height="15.00" fill="rgb(225,182,33)" rx="2" ry="2"/>
+<text x="874.49" y="241.00"></text>
+</g>
+<g>
+<title>CPointerHandle&lt;T0&gt;::init(CPointer&lt;T0&gt;, std.core::Array&lt;T0&gt;) (2 samples, 0.02%)</title>
+<rect x = "875.49" y="229.00" width="0.20" height="15.00" fill="rgb(219,152,10)" rx="2" ry="2"/>
+<text x="878.49" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20261a] (2 samples, 0.02%)</title>
+<rect x = "875.99" y="229.00" width="0.20" height="15.00" fill="rgb(224,20,31)" rx="2" ry="2"/>
+<text x="878.99" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20261e] (3 samples, 0.03%)</title>
+<rect x = "876.19" y="229.00" width="0.30" height="15.00" fill="rgb(247,60,32)" rx="2" ry="2"/>
+<text x="879.19" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2026ab] (15 samples, 0.13%)</title>
+<rect x = "876.78" y="229.00" width="1.50" height="15.00" fill="rgb(229,7,7)" rx="2" ry="2"/>
+<text x="879.78" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2026bc] (2 samples, 0.02%)</title>
+<rect x = "878.38" y="229.00" width="0.20" height="15.00" fill="rgb(206,218,10)" rx="2" ry="2"/>
+<text x="881.38" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2026c1] (13 samples, 0.11%)</title>
+<rect x = "878.58" y="229.00" width="1.30" height="15.00" fill="rgb(209,110,47)" rx="2" ry="2"/>
+<text x="881.58" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2026d6] (2 samples, 0.02%)</title>
+<rect x = "879.98" y="229.00" width="0.20" height="15.00" fill="rgb(232,147,5)" rx="2" ry="2"/>
+<text x="882.98" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a81] (5 samples, 0.04%)</title>
+<rect x = "880.58" y="213.00" width="0.50" height="15.00" fill="rgb(208,45,51)" rx="2" ry="2"/>
+<text x="883.58" y="225.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (5 samples, 0.04%)</title>
+<rect x = "880.58" y="197.00" width="0.50" height="15.00" fill="rgb(220,74,19)" rx="2" ry="2"/>
+<text x="883.58" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a6e6] (26 samples, 0.22%)</title>
+<rect x = "880.38" y="229.00" width="2.60" height="15.00" fill="rgb(232,216,26)" rx="2" ry="2"/>
+<text x="883.38" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a9a] (16 samples, 0.14%)</title>
+<rect x = "881.38" y="213.00" width="1.60" height="15.00" fill="rgb(233,61,10)" rx="2" ry="2"/>
+<text x="884.38" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a707] (2 samples, 0.02%)</title>
+<rect x = "882.97" y="229.00" width="0.20" height="15.00" fill="rgb(245,110,50)" rx="2" ry="2"/>
+<text x="885.97" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a75e] (5 samples, 0.04%)</title>
+<rect x = "883.37" y="229.00" width="0.50" height="15.00" fill="rgb(237,144,12)" rx="2" ry="2"/>
+<text x="886.37" y="241.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0xa0952] (557 samples, 4.71%)</title>
+<rect x = "891.06" y="181.00" width="55.60" height="15.00" fill="rgb(246,128,37)" rx="2" ry="2"/>
+<text x="894.06" y="193.00">[libc..</text>
+</g>
+<g>
+<title>CJ_SockSendNonBlockGeneral (646 samples, 5.46%)</title>
+<rect x = "886.67" y="197.00" width="64.48" height="15.00" fill="rgb(245,69,10)" rx="2" ry="2"/>
+<text x="889.67" y="209.00">CJ_Sock..</text>
+</g>
+<g>
+<title>__send (45 samples, 0.38%)</title>
+<rect x = "946.65" y="181.00" width="4.49" height="15.00" fill="rgb(215,6,21)" rx="2" ry="2"/>
+<text x="949.65" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d564] (3 samples, 0.03%)</title>
+<rect x = "951.25" y="197.00" width="0.30" height="15.00" fill="rgb(215,193,10)" rx="2" ry="2"/>
+<text x="954.25" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d5be] (2 samples, 0.02%)</title>
+<rect x = "951.64" y="197.00" width="0.20" height="15.00" fill="rgb(250,89,37)" rx="2" ry="2"/>
+<text x="954.64" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d711] (2 samples, 0.02%)</title>
+<rect x = "951.84" y="197.00" width="0.20" height="15.00" fill="rgb(213,174,16)" rx="2" ry="2"/>
+<text x="954.84" y="209.00"></text>
+</g>
+<g>
+<title>CJ_MRT_SockSendNonBlock (687 samples, 5.81%)</title>
+<rect x = "883.87" y="213.00" width="68.57" height="15.00" fill="rgb(254,114,50)" rx="2" ry="2"/>
+<text x="886.87" y="225.00">CJ_MRT_..</text>
+</g>
+<g>
+<title>__send (4 samples, 0.03%)</title>
+<rect x = "952.04" y="197.00" width="0.40" height="15.00" fill="rgb(247,62,36)" rx="2" ry="2"/>
+<text x="955.04" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d550] (11 samples, 0.09%)</title>
+<rect x = "952.54" y="213.00" width="1.10" height="15.00" fill="rgb(222,212,23)" rx="2" ry="2"/>
+<text x="955.54" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a796] (701 samples, 5.93%)</title>
+<rect x = "883.87" y="229.00" width="69.97" height="15.00" fill="rgb(227,196,13)" rx="2" ry="2"/>
+<text x="886.87" y="241.00">[libcan..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a79a] (19 samples, 0.16%)</title>
+<rect x = "953.84" y="229.00" width="1.90" height="15.00" fill="rgb(207,19,46)" rx="2" ry="2"/>
+<text x="956.84" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a7af] (3 samples, 0.03%)</title>
+<rect x = "955.94" y="229.00" width="0.30" height="15.00" fill="rgb(214,39,28)" rx="2" ry="2"/>
+<text x="958.94" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437b2] (22 samples, 0.19%)</title>
+<rect x = "956.54" y="213.00" width="2.20" height="15.00" fill="rgb(219,62,11)" rx="2" ry="2"/>
+<text x="959.54" y="225.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (22 samples, 0.19%)</title>
+<rect x = "956.54" y="197.00" width="2.20" height="15.00" fill="rgb(207,184,1)" rx="2" ry="2"/>
+<text x="959.54" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437be] (9 samples, 0.08%)</title>
+<rect x = "958.73" y="213.00" width="0.90" height="15.00" fill="rgb(243,81,40)" rx="2" ry="2"/>
+<text x="961.73" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437cb] (17 samples, 0.14%)</title>
+<rect x = "959.63" y="213.00" width="1.70" height="15.00" fill="rgb(235,169,27)" rx="2" ry="2"/>
+<text x="962.63" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437da] (4 samples, 0.03%)</title>
+<rect x = "961.33" y="213.00" width="0.40" height="15.00" fill="rgb(234,88,36)" rx="2" ry="2"/>
+<text x="964.33" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437e0] (2 samples, 0.02%)</title>
+<rect x = "961.73" y="213.00" width="0.20" height="15.00" fill="rgb(209,20,20)" rx="2" ry="2"/>
+<text x="964.73" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x243802] (2 samples, 0.02%)</title>
+<rect x = "962.03" y="213.00" width="0.20" height="15.00" fill="rgb(227,117,44)" rx="2" ry="2"/>
+<text x="965.03" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x243657] (2 samples, 0.02%)</title>
+<rect x = "962.03" y="197.00" width="0.20" height="15.00" fill="rgb(205,71,18)" rx="2" ry="2"/>
+<text x="965.03" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20b935] (2 samples, 0.02%)</title>
+<rect x = "962.22" y="149.00" width="0.20" height="15.00" fill="rgb(240,173,14)" rx="2" ry="2"/>
+<text x="965.22" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22d0f6] (4 samples, 0.03%)</title>
+<rect x = "962.22" y="181.00" width="0.40" height="15.00" fill="rgb(254,102,54)" rx="2" ry="2"/>
+<text x="965.22" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22c2d6] (4 samples, 0.03%)</title>
+<rect x = "962.22" y="165.00" width="0.40" height="15.00" fill="rgb(247,77,53)" rx="2" ry="2"/>
+<text x="965.22" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20b943] (2 samples, 0.02%)</title>
+<rect x = "962.42" y="149.00" width="0.20" height="15.00" fill="rgb(228,11,17)" rx="2" ry="2"/>
+<text x="965.42" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23eab5] (2 samples, 0.02%)</title>
+<rect x = "962.42" y="133.00" width="0.20" height="15.00" fill="rgb(226,19,48)" rx="2" ry="2"/>
+<text x="965.42" y="145.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x261ff6] (2 samples, 0.02%)</title>
+<rect x = "962.42" y="117.00" width="0.20" height="15.00" fill="rgb(242,82,32)" rx="2" ry="2"/>
+<text x="965.42" y="129.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a7bb] (65 samples, 0.55%)</title>
+<rect x = "956.34" y="229.00" width="6.49" height="15.00" fill="rgb(246,141,17)" rx="2" ry="2"/>
+<text x="959.34" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x243830] (6 samples, 0.05%)</title>
+<rect x = "962.22" y="213.00" width="0.60" height="15.00" fill="rgb(214,217,42)" rx="2" ry="2"/>
+<text x="965.22" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22c1df] (6 samples, 0.05%)</title>
+<rect x = "962.22" y="197.00" width="0.60" height="15.00" fill="rgb(224,9,49)" rx="2" ry="2"/>
+<text x="965.22" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22d3b3] (2 samples, 0.02%)</title>
+<rect x = "962.62" y="181.00" width="0.20" height="15.00" fill="rgb(220,121,20)" rx="2" ry="2"/>
+<text x="965.62" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22c3ef] (2 samples, 0.02%)</title>
+<rect x = "962.62" y="165.00" width="0.20" height="15.00" fill="rgb(233,107,24)" rx="2" ry="2"/>
+<text x="965.62" y="177.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20ba4b] (2 samples, 0.02%)</title>
+<rect x = "962.62" y="149.00" width="0.20" height="15.00" fill="rgb(208,226,28)" rx="2" ry="2"/>
+<text x="965.62" y="161.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23ebfc] (2 samples, 0.02%)</title>
+<rect x = "962.62" y="133.00" width="0.20" height="15.00" fill="rgb(234,220,2)" rx="2" ry="2"/>
+<text x="965.62" y="145.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26262d] (2 samples, 0.02%)</title>
+<rect x = "962.62" y="117.00" width="0.20" height="15.00" fill="rgb(222,95,9)" rx="2" ry="2"/>
+<text x="965.62" y="129.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x206737] (2 samples, 0.02%)</title>
+<rect x = "963.12" y="213.00" width="0.20" height="15.00" fill="rgb(236,176,3)" rx="2" ry="2"/>
+<text x="966.12" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x206770] (2 samples, 0.02%)</title>
+<rect x = "963.42" y="213.00" width="0.20" height="15.00" fill="rgb(219,225,10)" rx="2" ry="2"/>
+<text x="966.42" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x206774] (8 samples, 0.07%)</title>
+<rect x = "963.62" y="213.00" width="0.80" height="15.00" fill="rgb(233,186,33)" rx="2" ry="2"/>
+<text x="966.62" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283b8e] (6 samples, 0.05%)</title>
+<rect x = "964.62" y="197.00" width="0.60" height="15.00" fill="rgb(225,75,12)" rx="2" ry="2"/>
+<text x="967.62" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067ad] (8 samples, 0.07%)</title>
+<rect x = "964.52" y="213.00" width="0.80" height="15.00" fill="rgb(237,86,38)" rx="2" ry="2"/>
+<text x="967.52" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067b2] (2 samples, 0.02%)</title>
+<rect x = "965.32" y="213.00" width="0.20" height="15.00" fill="rgb(238,202,25)" rx="2" ry="2"/>
+<text x="968.32" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b5bd] (2 samples, 0.02%)</title>
+<rect x = "965.32" y="197.00" width="0.20" height="15.00" fill="rgb(250,60,14)" rx="2" ry="2"/>
+<text x="968.32" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067d7] (3 samples, 0.03%)</title>
+<rect x = "965.52" y="213.00" width="0.30" height="15.00" fill="rgb(226,175,52)" rx="2" ry="2"/>
+<text x="968.52" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2293cb] (3 samples, 0.03%)</title>
+<rect x = "965.52" y="197.00" width="0.30" height="15.00" fill="rgb(225,224,44)" rx="2" ry="2"/>
+<text x="968.52" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067da] (2 samples, 0.02%)</title>
+<rect x = "965.82" y="213.00" width="0.20" height="15.00" fill="rgb(212,73,14)" rx="2" ry="2"/>
+<text x="968.82" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x274f30] (9 samples, 0.08%)</title>
+<rect x = "966.32" y="197.00" width="0.90" height="15.00" fill="rgb(241,4,47)" rx="2" ry="2"/>
+<text x="969.32" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x274f3a] (4 samples, 0.03%)</title>
+<rect x = "967.22" y="197.00" width="0.40" height="15.00" fill="rgb(252,0,20)" rx="2" ry="2"/>
+<text x="970.22" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x274f42] (8 samples, 0.07%)</title>
+<rect x = "967.61" y="197.00" width="0.80" height="15.00" fill="rgb(224,0,26)" rx="2" ry="2"/>
+<text x="970.61" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2750f1] (8 samples, 0.07%)</title>
+<rect x = "967.61" y="181.00" width="0.80" height="15.00" fill="rgb(240,190,9)" rx="2" ry="2"/>
+<text x="970.61" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067e6] (26 samples, 0.22%)</title>
+<rect x = "966.02" y="213.00" width="2.60" height="15.00" fill="rgb(252,164,0)" rx="2" ry="2"/>
+<text x="969.02" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2067f6] (2 samples, 0.02%)</title>
+<rect x = "968.61" y="213.00" width="0.20" height="15.00" fill="rgb(236,39,19)" rx="2" ry="2"/>
+<text x="971.61" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fd4a] (2 samples, 0.02%)</title>
+<rect x = "968.61" y="197.00" width="0.20" height="15.00" fill="rgb(243,215,42)" rx="2" ry="2"/>
+<text x="971.61" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21fd52] (3 samples, 0.03%)</title>
+<rect x = "968.81" y="213.00" width="0.30" height="15.00" fill="rgb(207,76,27)" rx="2" ry="2"/>
+<text x="971.81" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22937c] (2 samples, 0.02%)</title>
+<rect x = "969.11" y="213.00" width="0.20" height="15.00" fill="rgb(229,88,4)" rx="2" ry="2"/>
+<text x="972.11" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273cb0] (11 samples, 0.09%)</title>
+<rect x = "969.41" y="213.00" width="1.10" height="15.00" fill="rgb(253,196,37)" rx="2" ry="2"/>
+<text x="972.41" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21ae61] (75 samples, 0.63%)</title>
+<rect x = "963.12" y="229.00" width="7.49" height="15.00" fill="rgb(254,214,9)" rx="2" ry="2"/>
+<text x="966.12" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21ae6a] (4 samples, 0.03%)</title>
+<rect x = "970.61" y="229.00" width="0.40" height="15.00" fill="rgb(253,163,34)" rx="2" ry="2"/>
+<text x="973.61" y="241.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (3 samples, 0.03%)</title>
+<rect x = "970.71" y="213.00" width="0.30" height="15.00" fill="rgb(238,125,52)" rx="2" ry="2"/>
+<text x="973.71" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b540] (4 samples, 0.03%)</title>
+<rect x = "971.11" y="229.00" width="0.40" height="15.00" fill="rgb(252,10,7)" rx="2" ry="2"/>
+<text x="974.11" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2437a0] (2 samples, 0.02%)</title>
+<rect x = "971.61" y="229.00" width="0.20" height="15.00" fill="rgb(251,167,14)" rx="2" ry="2"/>
+<text x="974.61" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283a70] (5 samples, 0.04%)</title>
+<rect x = "972.01" y="229.00" width="0.50" height="15.00" fill="rgb(208,180,10)" rx="2" ry="2"/>
+<text x="975.01" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x283bef] (2 samples, 0.02%)</title>
+<rect x = "972.61" y="229.00" width="0.20" height="15.00" fill="rgb(238,38,30)" rx="2" ry="2"/>
+<text x="975.61" y="241.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (2 samples, 0.02%)</title>
+<rect x = "972.61" y="213.00" width="0.20" height="15.00" fill="rgb(220,210,4)" rx="2" ry="2"/>
+<text x="975.61" y="225.00"></text>
+</g>
+<g>
+<title>DopraTcpSocketImpl::writeImpl(std.core::Array&lt;UInt8&gt;, Int64) (1031 samples, 8.72%)</title>
+<rect x = "870.00" y="245.00" width="102.91" height="15.00" fill="rgb(207,36,27)" rx="2" ry="2"/>
+<text x="873.00" y="257.00">DopraTcpSock..</text>
+</g>
+<g>
+<title>Int32::Max::get() (2 samples, 0.02%)</title>
+<rect x = "972.90" y="245.00" width="0.20" height="15.00" fill="rgb(233,196,35)" rx="2" ry="2"/>
+<text x="975.90" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a801] (3 samples, 0.03%)</title>
+<rect x = "973.10" y="245.00" width="0.30" height="15.00" fill="rgb(211,227,37)" rx="2" ry="2"/>
+<text x="976.10" y="257.00"></text>
+</g>
+<g>
+<title>SocketHolder&lt;std.net::DopraTcpSocketImpl&gt;::write&lt;Unit&gt;((std.net::DopraTcpSocketImpl, std.net::SocketState) -&gt; Unit) (1192 samples, 10.08%)</title>
+<rect x = "854.63" y="293.00" width="118.98" height="15.00" fill="rgb(227,76,22)" rx="2" ry="2"/>
+<text x="857.63" y="305.00">SocketHolder&lt;s..</text>
+</g>
+<g>
+<title>_CCNaf12SocketCommonICNaf18DopraTcpSocketImplEE5writeHRNat5ArrayIhEEL_E$i (1112 samples, 9.41%)</title>
+<rect x = "862.61" y="277.00" width="110.99" height="15.00" fill="rgb(243,1,2)" rx="2" ry="2"/>
+<text x="865.61" y="289.00">_CCNaf12Socke..</text>
+</g>
+<g>
+<title>DopraTcpSocketImpl::write(std.core::Array&lt;UInt8&gt;, std.core::Option&lt;std.core::Duration&gt;) (1063 samples, 8.99%)</title>
+<rect x = "867.50" y="261.00" width="106.10" height="15.00" fill="rgb(240,58,39)" rx="2" ry="2"/>
+<text x="870.50" y="273.00">DopraTcpSock..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x258f74] (3 samples, 0.03%)</title>
+<rect x = "973.80" y="197.00" width="0.30" height="15.00" fill="rgb(240,224,49)" rx="2" ry="2"/>
+<text x="976.80" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x259639] (3 samples, 0.03%)</title>
+<rect x = "973.80" y="181.00" width="0.30" height="15.00" fill="rgb(224,160,14)" rx="2" ry="2"/>
+<text x="976.80" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x255b05] (2 samples, 0.02%)</title>
+<rect x = "973.90" y="165.00" width="0.20" height="15.00" fill="rgb(231,33,3)" rx="2" ry="2"/>
+<text x="976.90" y="177.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fd07] (5 samples, 0.04%)</title>
+<rect x = "974.30" y="181.00" width="0.50" height="15.00" fill="rgb(252,70,15)" rx="2" ry="2"/>
+<text x="977.30" y="193.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fd0e] (2 samples, 0.02%)</title>
+<rect x = "974.80" y="181.00" width="0.20" height="15.00" fill="rgb(213,84,49)" rx="2" ry="2"/>
+<text x="977.80" y="193.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fd15] (5 samples, 0.04%)</title>
+<rect x = "975.00" y="181.00" width="0.50" height="15.00" fill="rgb(232,203,50)" rx="2" ry="2"/>
+<text x="978.00" y="193.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2591b4] (14 samples, 0.12%)</title>
+<rect x = "974.20" y="197.00" width="1.40" height="15.00" fill="rgb(220,171,8)" rx="2" ry="2"/>
+<text x="977.20" y="209.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x254ae0] (21 samples, 0.18%)</title>
+<rect x = "973.70" y="229.00" width="2.10" height="15.00" fill="rgb(212,223,11)" rx="2" ry="2"/>
+<text x="976.70" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x25bcdd] (21 samples, 0.18%)</title>
+<rect x = "973.70" y="213.00" width="2.10" height="15.00" fill="rgb(211,31,37)" rx="2" ry="2"/>
+<text x="976.70" y="225.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21aa71] (24 samples, 0.20%)</title>
+<rect x = "973.60" y="293.00" width="2.40" height="15.00" fill="rgb(234,57,46)" rx="2" ry="2"/>
+<text x="976.60" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x203376] (24 samples, 0.20%)</title>
+<rect x = "973.60" y="277.00" width="2.40" height="15.00" fill="rgb(220,162,32)" rx="2" ry="2"/>
+<text x="976.60" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x231cf2] (24 samples, 0.20%)</title>
+<rect x = "973.60" y="261.00" width="2.40" height="15.00" fill="rgb(214,183,39)" rx="2" ry="2"/>
+<text x="976.60" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x254213] (24 samples, 0.20%)</title>
+<rect x = "973.60" y="245.00" width="2.40" height="15.00" fill="rgb(249,159,2)" rx="2" ry="2"/>
+<text x="976.60" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x254ae8] (2 samples, 0.02%)</title>
+<rect x = "975.80" y="229.00" width="0.20" height="15.00" fill="rgb(214,208,34)" rx="2" ry="2"/>
+<text x="978.80" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9c2] (5 samples, 0.04%)</title>
+<rect x = "976.30" y="293.00" width="0.50" height="15.00" fill="rgb(209,176,24)" rx="2" ry="2"/>
+<text x="979.30" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (4 samples, 0.03%)</title>
+<rect x = "976.40" y="277.00" width="0.40" height="15.00" fill="rgb(213,186,17)" rx="2" ry="2"/>
+<text x="979.40" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22e75e] (3 samples, 0.03%)</title>
+<rect x = "976.50" y="261.00" width="0.30" height="15.00" fill="rgb(226,71,25)" rx="2" ry="2"/>
+<text x="979.50" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22e8f7] (3 samples, 0.03%)</title>
+<rect x = "976.50" y="245.00" width="0.30" height="15.00" fill="rgb(246,80,28)" rx="2" ry="2"/>
+<text x="979.50" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7e1] (2 samples, 0.02%)</title>
+<rect x = "977.30" y="293.00" width="0.20" height="15.00" fill="rgb(222,146,34)" rx="2" ry="2"/>
+<text x="980.30" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260366] (2 samples, 0.02%)</title>
+<rect x = "977.30" y="277.00" width="0.20" height="15.00" fill="rgb(241,67,28)" rx="2" ry="2"/>
+<text x="980.30" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273c1a] (2 samples, 0.02%)</title>
+<rect x = "977.30" y="261.00" width="0.20" height="15.00" fill="rgb(249,83,17)" rx="2" ry="2"/>
+<text x="980.30" y="273.00"></text>
+</g>
+<g>
+<title>TcpSocket::write(std.core::Array&lt;UInt8&gt;) (1268 samples, 10.73%)</title>
+<rect x = "851.23" y="309.00" width="126.56" height="15.00" fill="rgb(244,32,15)" rx="2" ry="2"/>
+<text x="854.23" y="321.00">TcpSocket::writ..</text>
+</g>
+<g>
+<title>_CCNaf12SocketCommonICNaf18DopraTcpSocketImplEE5writeHRNat5ArrayIhEEL_E$i (2 samples, 0.02%)</title>
+<rect x = "977.60" y="293.00" width="0.20" height="15.00" fill="rgb(228,96,7)" rx="2" ry="2"/>
+<text x="980.60" y="305.00"></text>
+</g>
+<g>
+<title>BufferedWriter::flush(std.net::TcpSocket) (1308 samples, 11.06%)</title>
+<rect x = "847.34" y="325.00" width="130.56" height="15.00" fill="rgb(238,117,35)" rx="2" ry="2"/>
+<text x="850.34" y="337.00">BufferedWriter::..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9b2] (3 samples, 0.03%)</title>
+<rect x = "984.18" y="309.00" width="0.30" height="15.00" fill="rgb(237,42,24)" rx="2" ry="2"/>
+<text x="987.18" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9c2] (2 samples, 0.02%)</title>
+<rect x = "984.48" y="309.00" width="0.20" height="15.00" fill="rgb(231,72,0)" rx="2" ry="2"/>
+<text x="987.48" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (2 samples, 0.02%)</title>
+<rect x = "984.48" y="293.00" width="0.20" height="15.00" fill="rgb(250,175,28)" rx="2" ry="2"/>
+<text x="987.48" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7c9] (4 samples, 0.03%)</title>
+<rect x = "984.88" y="309.00" width="0.40" height="15.00" fill="rgb(250,216,48)" rx="2" ry="2"/>
+<text x="987.88" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (3 samples, 0.03%)</title>
+<rect x = "984.98" y="293.00" width="0.30" height="15.00" fill="rgb(253,75,14)" rx="2" ry="2"/>
+<text x="987.98" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7d1] (2 samples, 0.02%)</title>
+<rect x = "985.38" y="309.00" width="0.20" height="15.00" fill="rgb(250,82,14)" rx="2" ry="2"/>
+<text x="988.38" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2739e3] (3 samples, 0.03%)</title>
+<rect x = "985.58" y="261.00" width="0.30" height="15.00" fill="rgb(225,196,2)" rx="2" ry="2"/>
+<text x="988.58" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260366] (5 samples, 0.04%)</title>
+<rect x = "985.58" y="293.00" width="0.50" height="15.00" fill="rgb(213,85,1)" rx="2" ry="2"/>
+<text x="988.58" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273c1a] (5 samples, 0.04%)</title>
+<rect x = "985.58" y="277.00" width="0.50" height="15.00" fill="rgb(235,139,40)" rx="2" ry="2"/>
+<text x="988.58" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2739f6] (2 samples, 0.02%)</title>
+<rect x = "985.88" y="261.00" width="0.20" height="15.00" fill="rgb(217,62,52)" rx="2" ry="2"/>
+<text x="988.88" y="273.00"></text>
+</g>
+<g>
+<title>HeaderTable::reset() (83 samples, 0.70%)</title>
+<rect x = "978.00" y="325.00" width="8.28" height="15.00" fill="rgb(208,154,41)" rx="2" ry="2"/>
+<text x="981.00" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7e1] (7 samples, 0.06%)</title>
+<rect x = "985.58" y="309.00" width="0.70" height="15.00" fill="rgb(219,173,14)" rx="2" ry="2"/>
+<text x="988.58" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273bf0] (2 samples, 0.02%)</title>
+<rect x = "986.08" y="293.00" width="0.20" height="15.00" fill="rgb(226,188,49)" rx="2" ry="2"/>
+<text x="989.08" y="305.00"></text>
+</g>
+<g>
+<title>ArgsView::reset() (57 samples, 0.48%)</title>
+<rect x = "1026.90" y="309.00" width="5.69" height="15.00" fill="rgb(244,44,46)" rx="2" ry="2"/>
+<text x="1029.90" y="321.00"></text>
+</g>
+<g>
+<title>Bytes::equals(ystyle::tachyon::Bytes) (27 samples, 0.23%)</title>
+<rect x = "1032.59" y="309.00" width="2.69" height="15.00" fill="rgb(234,94,43)" rx="2" ry="2"/>
+<text x="1035.59" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x203c29] (2 samples, 0.02%)</title>
+<rect x = "1037.88" y="277.00" width="0.20" height="15.00" fill="rgb(248,141,50)" rx="2" ry="2"/>
+<text x="1040.88" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x203c3c] (2 samples, 0.02%)</title>
+<rect x = "1038.08" y="277.00" width="0.20" height="15.00" fill="rgb(224,12,32)" rx="2" ry="2"/>
+<text x="1041.08" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x203d0f] (2 samples, 0.02%)</title>
+<rect x = "1038.48" y="277.00" width="0.20" height="15.00" fill="rgb(221,132,49)" rx="2" ry="2"/>
+<text x="1041.48" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x203d18] (2 samples, 0.02%)</title>
+<rect x = "1038.78" y="277.00" width="0.20" height="15.00" fill="rgb(253,92,3)" rx="2" ry="2"/>
+<text x="1041.78" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x229371] (5 samples, 0.04%)</title>
+<rect x = "1039.18" y="261.00" width="0.50" height="15.00" fill="rgb(213,185,22)" rx="2" ry="2"/>
+<text x="1042.18" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x253ca0] (3 samples, 0.03%)</title>
+<rect x = "1039.68" y="261.00" width="0.30" height="15.00" fill="rgb(210,60,44)" rx="2" ry="2"/>
+<text x="1042.68" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x231b95] (3 samples, 0.03%)</title>
+<rect x = "1040.18" y="245.00" width="0.30" height="15.00" fill="rgb(252,26,37)" rx="2" ry="2"/>
+<text x="1043.18" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x231b94] (7 samples, 0.06%)</title>
+<rect x = "1040.68" y="229.00" width="0.70" height="15.00" fill="rgb(248,137,47)" rx="2" ry="2"/>
+<text x="1043.68" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x253cab] (12 samples, 0.10%)</title>
+<rect x = "1040.58" y="245.00" width="1.20" height="15.00" fill="rgb(219,38,3)" rx="2" ry="2"/>
+<text x="1043.58" y="257.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (4 samples, 0.03%)</title>
+<rect x = "1041.38" y="229.00" width="0.40" height="15.00" fill="rgb(207,137,30)" rx="2" ry="2"/>
+<text x="1044.38" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x254205] (18 samples, 0.15%)</title>
+<rect x = "1040.18" y="261.00" width="1.80" height="15.00" fill="rgb(231,22,38)" rx="2" ry="2"/>
+<text x="1043.18" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x253e88] (7 samples, 0.06%)</title>
+<rect x = "1042.18" y="245.00" width="0.70" height="15.00" fill="rgb(226,222,15)" rx="2" ry="2"/>
+<text x="1045.18" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x253ea5] (8 samples, 0.07%)</title>
+<rect x = "1042.87" y="245.00" width="0.80" height="15.00" fill="rgb(240,30,49)" rx="2" ry="2"/>
+<text x="1045.87" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x254213] (18 samples, 0.15%)</title>
+<rect x = "1041.98" y="261.00" width="1.80" height="15.00" fill="rgb(210,38,17)" rx="2" ry="2"/>
+<text x="1044.98" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x203d2b] (48 samples, 0.41%)</title>
+<rect x = "1039.08" y="277.00" width="4.79" height="15.00" fill="rgb(210,48,9)" rx="2" ry="2"/>
+<text x="1042.08" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x203d3a] (5 samples, 0.04%)</title>
+<rect x = "1043.97" y="277.00" width="0.50" height="15.00" fill="rgb(225,46,19)" rx="2" ry="2"/>
+<text x="1046.97" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x229490] (11 samples, 0.09%)</title>
+<rect x = "1045.07" y="277.00" width="1.10" height="15.00" fill="rgb(234,205,45)" rx="2" ry="2"/>
+<text x="1048.07" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x255830] (6 samples, 0.05%)</title>
+<rect x = "1046.27" y="277.00" width="0.60" height="15.00" fill="rgb(218,138,19)" rx="2" ry="2"/>
+<text x="1049.27" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21abd9] (91 samples, 0.77%)</title>
+<rect x = "1037.88" y="293.00" width="9.08" height="15.00" fill="rgb(222,152,37)" rx="2" ry="2"/>
+<text x="1040.88" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21abe2] (3 samples, 0.03%)</title>
+<rect x = "1046.97" y="293.00" width="0.30" height="15.00" fill="rgb(241,137,11)" rx="2" ry="2"/>
+<text x="1049.97" y="305.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (2 samples, 0.02%)</title>
+<rect x = "1047.07" y="277.00" width="0.20" height="15.00" fill="rgb(228,133,23)" rx="2" ry="2"/>
+<text x="1050.07" y="289.00"></text>
+</g>
+<g>
+<title>String::toArray() (124 samples, 1.05%)</title>
+<rect x = "1035.29" y="309.00" width="12.38" height="15.00" fill="rgb(226,26,20)" rx="2" ry="2"/>
+<text x="1038.29" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b545] (3 samples, 0.03%)</title>
+<rect x = "1047.37" y="293.00" width="0.30" height="15.00" fill="rgb(209,112,33)" rx="2" ry="2"/>
+<text x="1050.37" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21abb8] (2 samples, 0.02%)</title>
+<rect x = "1048.26" y="309.00" width="0.20" height="15.00" fill="rgb(233,49,46)" rx="2" ry="2"/>
+<text x="1051.26" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9b2] (7 samples, 0.06%)</title>
+<rect x = "1048.66" y="309.00" width="0.70" height="15.00" fill="rgb(230,74,7)" rx="2" ry="2"/>
+<text x="1051.66" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (7 samples, 0.06%)</title>
+<rect x = "1048.66" y="293.00" width="0.70" height="15.00" fill="rgb(214,186,48)" rx="2" ry="2"/>
+<text x="1051.66" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22e75e] (3 samples, 0.03%)</title>
+<rect x = "1049.06" y="277.00" width="0.30" height="15.00" fill="rgb(240,177,33)" rx="2" ry="2"/>
+<text x="1052.06" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22ea1b] (2 samples, 0.02%)</title>
+<rect x = "1049.66" y="245.00" width="0.20" height="15.00" fill="rgb(222,122,18)" rx="2" ry="2"/>
+<text x="1052.66" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9c2] (6 samples, 0.05%)</title>
+<rect x = "1049.36" y="309.00" width="0.60" height="15.00" fill="rgb(231,210,52)" rx="2" ry="2"/>
+<text x="1052.36" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (6 samples, 0.05%)</title>
+<rect x = "1049.36" y="293.00" width="0.60" height="15.00" fill="rgb(210,58,4)" rx="2" ry="2"/>
+<text x="1052.36" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22e75e] (4 samples, 0.03%)</title>
+<rect x = "1049.56" y="277.00" width="0.40" height="15.00" fill="rgb(236,221,27)" rx="2" ry="2"/>
+<text x="1052.56" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22e8f7] (3 samples, 0.03%)</title>
+<rect x = "1049.66" y="261.00" width="0.30" height="15.00" fill="rgb(205,52,49)" rx="2" ry="2"/>
+<text x="1052.66" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7cc] (3 samples, 0.03%)</title>
+<rect x = "1050.06" y="309.00" width="0.30" height="15.00" fill="rgb(237,58,33)" rx="2" ry="2"/>
+<text x="1053.06" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7d1] (3 samples, 0.03%)</title>
+<rect x = "1050.36" y="309.00" width="0.30" height="15.00" fill="rgb(250,107,42)" rx="2" ry="2"/>
+<text x="1053.36" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260366] (2 samples, 0.02%)</title>
+<rect x = "1050.66" y="293.00" width="0.20" height="15.00" fill="rgb(244,94,53)" rx="2" ry="2"/>
+<text x="1053.66" y="305.00"></text>
+</g>
+<g>
+<title>Request::parseHeaders(std.core::Array&lt;UInt8&gt;, Int64, Int64) (648 samples, 5.48%)</title>
+<rect x = "986.28" y="325.00" width="64.68" height="15.00" fill="rgb(228,206,35)" rx="2" ry="2"/>
+<text x="989.28" y="337.00">Request..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7e1] (3 samples, 0.03%)</title>
+<rect x = "1050.66" y="309.00" width="0.30" height="15.00" fill="rgb(206,41,17)" rx="2" ry="2"/>
+<text x="1053.66" y="321.00"></text>
+</g>
+<g>
+<title>ArgsView::reset() (71 samples, 0.60%)</title>
+<rect x = "1064.43" y="309.00" width="7.09" height="15.00" fill="rgb(231,121,25)" rx="2" ry="2"/>
+<text x="1067.43" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7e1] (2 samples, 0.02%)</title>
+<rect x = "1071.32" y="293.00" width="0.20" height="15.00" fill="rgb(244,87,37)" rx="2" ry="2"/>
+<text x="1074.32" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260350] (3 samples, 0.03%)</title>
+<rect x = "1083.60" y="293.00" width="0.30" height="15.00" fill="rgb(211,13,15)" rx="2" ry="2"/>
+<text x="1086.60" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9b2] (5 samples, 0.04%)</title>
+<rect x = "1084.10" y="293.00" width="0.50" height="15.00" fill="rgb(236,166,18)" rx="2" ry="2"/>
+<text x="1087.10" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (5 samples, 0.04%)</title>
+<rect x = "1084.10" y="277.00" width="0.50" height="15.00" fill="rgb(245,76,42)" rx="2" ry="2"/>
+<text x="1087.10" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9c2] (6 samples, 0.05%)</title>
+<rect x = "1084.60" y="293.00" width="0.60" height="15.00" fill="rgb(211,131,36)" rx="2" ry="2"/>
+<text x="1087.60" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (5 samples, 0.04%)</title>
+<rect x = "1084.70" y="277.00" width="0.50" height="15.00" fill="rgb(219,228,35)" rx="2" ry="2"/>
+<text x="1087.70" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22e75e] (4 samples, 0.03%)</title>
+<rect x = "1084.80" y="261.00" width="0.40" height="15.00" fill="rgb(228,79,14)" rx="2" ry="2"/>
+<text x="1087.80" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22e8f7] (2 samples, 0.02%)</title>
+<rect x = "1085.00" y="245.00" width="0.20" height="15.00" fill="rgb(242,192,12)" rx="2" ry="2"/>
+<text x="1088.00" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9c5] (4 samples, 0.03%)</title>
+<rect x = "1085.20" y="293.00" width="0.40" height="15.00" fill="rgb(234,153,19)" rx="2" ry="2"/>
+<text x="1088.20" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9da] (3 samples, 0.03%)</title>
+<rect x = "1085.69" y="293.00" width="0.30" height="15.00" fill="rgb(231,69,27)" rx="2" ry="2"/>
+<text x="1088.69" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260366] (3 samples, 0.03%)</title>
+<rect x = "1085.69" y="277.00" width="0.30" height="15.00" fill="rgb(253,210,39)" rx="2" ry="2"/>
+<text x="1088.69" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273c1a] (2 samples, 0.02%)</title>
+<rect x = "1085.79" y="261.00" width="0.20" height="15.00" fill="rgb(217,137,54)" rx="2" ry="2"/>
+<text x="1088.79" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22e673] (2 samples, 0.02%)</title>
+<rect x = "1086.89" y="261.00" width="0.20" height="15.00" fill="rgb(207,20,41)" rx="2" ry="2"/>
+<text x="1089.89" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7c9] (7 samples, 0.06%)</title>
+<rect x = "1086.59" y="293.00" width="0.70" height="15.00" fill="rgb(250,222,9)" rx="2" ry="2"/>
+<text x="1089.59" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (4 samples, 0.03%)</title>
+<rect x = "1086.89" y="277.00" width="0.40" height="15.00" fill="rgb(220,179,22)" rx="2" ry="2"/>
+<text x="1089.89" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7cc] (9 samples, 0.08%)</title>
+<rect x = "1087.29" y="293.00" width="0.90" height="15.00" fill="rgb(216,35,16)" rx="2" ry="2"/>
+<text x="1090.29" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7d1] (3 samples, 0.03%)</title>
+<rect x = "1088.19" y="293.00" width="0.30" height="15.00" fill="rgb(221,169,52)" rx="2" ry="2"/>
+<text x="1091.19" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2739e3] (2 samples, 0.02%)</title>
+<rect x = "1089.09" y="245.00" width="0.20" height="15.00" fill="rgb(212,228,0)" rx="2" ry="2"/>
+<text x="1092.09" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273c1a] (6 samples, 0.05%)</title>
+<rect x = "1088.79" y="261.00" width="0.60" height="15.00" fill="rgb(250,37,45)" rx="2" ry="2"/>
+<text x="1091.79" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260366] (9 samples, 0.08%)</title>
+<rect x = "1088.59" y="277.00" width="0.90" height="15.00" fill="rgb(221,3,15)" rx="2" ry="2"/>
+<text x="1091.59" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7e1] (10 samples, 0.08%)</title>
+<rect x = "1088.59" y="293.00" width="1.00" height="15.00" fill="rgb(243,54,52)" rx="2" ry="2"/>
+<text x="1091.59" y="305.00"></text>
+</g>
+<g>
+<title>HeaderTable::reset() (184 samples, 1.56%)</title>
+<rect x = "1071.52" y="309.00" width="18.37" height="15.00" fill="rgb(244,36,29)" rx="2" ry="2"/>
+<text x="1074.52" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260370] (2 samples, 0.02%)</title>
+<rect x = "1090.09" y="309.00" width="0.20" height="15.00" fill="rgb(229,141,21)" rx="2" ry="2"/>
+<text x="1093.09" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b95c] (2 samples, 0.02%)</title>
+<rect x = "1090.39" y="309.00" width="0.20" height="15.00" fill="rgb(232,128,14)" rx="2" ry="2"/>
+<text x="1093.39" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9c2] (4 samples, 0.03%)</title>
+<rect x = "1090.59" y="309.00" width="0.40" height="15.00" fill="rgb(253,183,30)" rx="2" ry="2"/>
+<text x="1093.59" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (4 samples, 0.03%)</title>
+<rect x = "1090.59" y="293.00" width="0.40" height="15.00" fill="rgb(226,36,47)" rx="2" ry="2"/>
+<text x="1093.59" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7c9] (3 samples, 0.03%)</title>
+<rect x = "1091.08" y="309.00" width="0.30" height="15.00" fill="rgb(249,122,11)" rx="2" ry="2"/>
+<text x="1094.08" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (3 samples, 0.03%)</title>
+<rect x = "1091.08" y="293.00" width="0.30" height="15.00" fill="rgb(211,12,4)" rx="2" ry="2"/>
+<text x="1094.08" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7cc] (2 samples, 0.02%)</title>
+<rect x = "1091.38" y="309.00" width="0.20" height="15.00" fill="rgb(238,107,6)" rx="2" ry="2"/>
+<text x="1094.38" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7d4] (2 samples, 0.02%)</title>
+<rect x = "1091.58" y="309.00" width="0.20" height="15.00" fill="rgb(229,23,22)" rx="2" ry="2"/>
+<text x="1094.58" y="321.00"></text>
+</g>
+<g>
+<title>RequestCtx::reset() (413 samples, 3.49%)</title>
+<rect x = "1050.96" y="325.00" width="41.22" height="15.00" fill="rgb(211,111,8)" rx="2" ry="2"/>
+<text x="1053.96" y="337.00">Req..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7e1] (4 samples, 0.03%)</title>
+<rect x = "1091.78" y="309.00" width="0.40" height="15.00" fill="rgb(223,32,1)" rx="2" ry="2"/>
+<text x="1094.78" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260366] (4 samples, 0.03%)</title>
+<rect x = "1091.78" y="293.00" width="0.40" height="15.00" fill="rgb(223,226,17)" rx="2" ry="2"/>
+<text x="1094.78" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273c1a] (3 samples, 0.03%)</title>
+<rect x = "1091.88" y="277.00" width="0.30" height="15.00" fill="rgb(246,105,48)" rx="2" ry="2"/>
+<text x="1094.88" y="289.00"></text>
+</g>
+<g>
+<title>appendInt64(std.core::Array&lt;UInt8&gt;, Int64, Int64) (25 samples, 0.21%)</title>
+<rect x = "1110.85" y="309.00" width="2.50" height="15.00" fill="rgb(232,206,51)" rx="2" ry="2"/>
+<text x="1113.85" y="321.00"></text>
+</g>
+<g>
+<title>Response::serialize(ystyle::tachyon::BufferedWriter, std.core::String, std.core::Array&lt;UInt8&gt;) (219 samples, 1.85%)</title>
+<rect x = "1092.18" y="325.00" width="21.86" height="15.00" fill="rgb(237,199,38)" rx="2" ry="2"/>
+<text x="1095.18" y="337.00">R..</text>
+</g>
+<g>
+<title>statusText(UInt16) (7 samples, 0.06%)</title>
+<rect x = "1113.34" y="309.00" width="0.70" height="15.00" fill="rgb(230,83,42)" rx="2" ry="2"/>
+<text x="1116.34" y="321.00"></text>
+</g>
+<g>
+<title>String::toArray() (4 samples, 0.03%)</title>
+<rect x = "1114.04" y="325.00" width="0.40" height="15.00" fill="rgb(233,201,24)" rx="2" ry="2"/>
+<text x="1117.04" y="337.00"></text>
+</g>
+<g>
+<title>TcpSocket::readTimeout::set(std.core::Option&lt;std.core::Duration&gt;) (36 samples, 0.30%)</title>
+<rect x = "1114.44" y="325.00" width="3.59" height="15.00" fill="rgb(233,155,51)" rx="2" ry="2"/>
+<text x="1117.44" y="337.00"></text>
+</g>
+<g>
+<title>TcpSocket::writeTimeout::set(std.core::Option&lt;std.core::Duration&gt;) (50 samples, 0.42%)</title>
+<rect x = "1118.13" y="325.00" width="4.99" height="15.00" fill="rgb(211,229,6)" rx="2" ry="2"/>
+<text x="1121.13" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26b9da] (2 samples, 0.02%)</title>
+<rect x = "1123.72" y="325.00" width="0.20" height="15.00" fill="rgb(245,165,39)" rx="2" ry="2"/>
+<text x="1126.72" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260366] (2 samples, 0.02%)</title>
+<rect x = "1123.72" y="309.00" width="0.20" height="15.00" fill="rgb(235,75,12)" rx="2" ry="2"/>
+<text x="1126.72" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273c1a] (2 samples, 0.02%)</title>
+<rect x = "1123.72" y="293.00" width="0.20" height="15.00" fill="rgb(242,195,20)" rx="2" ry="2"/>
+<text x="1126.72" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7c9] (2 samples, 0.02%)</title>
+<rect x = "1128.91" y="293.00" width="0.20" height="15.00" fill="rgb(221,217,51)" rx="2" ry="2"/>
+<text x="1131.91" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26c619] (2 samples, 0.02%)</title>
+<rect x = "1128.91" y="277.00" width="0.20" height="15.00" fill="rgb(219,34,19)" rx="2" ry="2"/>
+<text x="1131.91" y="289.00"></text>
+</g>
+<g>
+<title>_CCN17bench_tachyon_min4mainHRNat5ArrayIRNat6StringEEEL_E$i (51 samples, 0.43%)</title>
+<rect x = "1124.32" y="325.00" width="5.09" height="15.00" fill="rgb(253,57,28)" rx="2" ry="2"/>
+<text x="1127.32" y="337.00"></text>
+</g>
+<g>
+<title>RequestCtx::successString(std.core::String, std.core::String) (22 samples, 0.19%)</title>
+<rect x = "1127.22" y="309.00" width="2.20" height="15.00" fill="rgb(233,124,26)" rx="2" ry="2"/>
+<text x="1130.22" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26d7e1] (2 samples, 0.02%)</title>
+<rect x = "1129.21" y="293.00" width="0.20" height="15.00" fill="rgb(227,42,39)" rx="2" ry="2"/>
+<text x="1132.21" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x260366] (2 samples, 0.02%)</title>
+<rect x = "1129.21" y="277.00" width="0.20" height="15.00" fill="rgb(242,172,39)" rx="2" ry="2"/>
+<text x="1132.21" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x273c1a] (2 samples, 0.02%)</title>
+<rect x = "1129.21" y="261.00" width="0.20" height="15.00" fill="rgb(225,91,45)" rx="2" ry="2"/>
+<text x="1132.21" y="273.00"></text>
+</g>
+<g>
+<title>Server::perConnLoop(std.net::TcpSocket, UInt64) (10290 samples, 87.04%)</title>
+<rect x = "102.53" y="341.00" width="1027.09" height="15.00" fill="rgb(244,163,17)" rx="2" ry="2"/>
+<text x="105.53" y="353.00">Server::perConnLoop(std.net::TcpSocket, UInt64)</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x281cfa] (10309 samples, 87.20%)</title>
+<rect x = "101.13" y="421.00" width="1028.98" height="15.00" fill="rgb(233,214,8)" rx="2" ry="2"/>
+<text x="104.13" y="433.00">[libcangjie-runtime.so+0x281cfa]</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x21a553] (10309 samples, 87.20%)</title>
+<rect x = "101.13" y="405.00" width="1028.98" height="15.00" fill="rgb(235,83,33)" rx="2" ry="2"/>
+<text x="104.13" y="417.00">[libcangjie-runtime.so+0x21a553]</text>
+</g>
+<g>
+<title>Future&lt;T0&gt;::executeClosure(() -&gt; T0) (10309 samples, 87.20%)</title>
+<rect x = "101.13" y="389.00" width="1028.98" height="15.00" fill="rgb(226,141,5)" rx="2" ry="2"/>
+<text x="104.13" y="401.00">Future&lt;T0&gt;::executeClosure(() -&gt; T0)</text>
+</g>
+<g>
+<title>_CCN14ystyle:tachyon6Server13serveInternalHCNaf15TcpServerSocketEEL_E$g (10309 samples, 87.20%)</title>
+<rect x = "101.13" y="373.00" width="1028.98" height="15.00" fill="rgb(234,58,22)" rx="2" ry="2"/>
+<text x="104.13" y="385.00">_CCN14ystyle:tachyon6Server13serveInternalHCNaf15TcpServerSocketEEL_E$g</text>
+</g>
+<g>
+<title>Server::serveInternal::lambda.0() (10309 samples, 87.20%)</title>
+<rect x = "101.13" y="357.00" width="1028.98" height="15.00" fill="rgb(208,16,16)" rx="2" ry="2"/>
+<text x="104.13" y="369.00">Server::serveInternal::lambda.0()</text>
+</g>
+<g>
+<title>_CCN17bench_tachyon_min4mainHRNat5ArrayIRNat6StringEEEL_E$i (3 samples, 0.03%)</title>
+<rect x = "1129.81" y="341.00" width="0.30" height="15.00" fill="rgb(221,86,35)" rx="2" ry="2"/>
+<text x="1132.81" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x287185] (3 samples, 0.03%)</title>
+<rect x = "1130.51" y="405.00" width="0.30" height="15.00" fill="rgb(219,28,9)" rx="2" ry="2"/>
+<text x="1133.51" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282a9b] (5 samples, 0.04%)</title>
+<rect x = "1130.41" y="421.00" width="0.50" height="15.00" fill="rgb(208,217,12)" rx="2" ry="2"/>
+<text x="1133.41" y="433.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b540] (2 samples, 0.02%)</title>
+<rect x = "1130.91" y="405.00" width="0.20" height="15.00" fill="rgb(225,70,10)" rx="2" ry="2"/>
+<text x="1133.91" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285c00] (2 samples, 0.02%)</title>
+<rect x = "1131.31" y="405.00" width="0.20" height="15.00" fill="rgb(242,69,38)" rx="2" ry="2"/>
+<text x="1134.31" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2863a3] (32 samples, 0.27%)</title>
+<rect x = "1131.71" y="405.00" width="3.19" height="15.00" fill="rgb(215,227,24)" rx="2" ry="2"/>
+<text x="1134.71" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2863aa] (9 samples, 0.08%)</title>
+<rect x = "1134.90" y="405.00" width="0.90" height="15.00" fill="rgb(215,118,24)" rx="2" ry="2"/>
+<text x="1137.90" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2863ae] (2 samples, 0.02%)</title>
+<rect x = "1135.80" y="405.00" width="0.20" height="15.00" fill="rgb(208,1,1)" rx="2" ry="2"/>
+<text x="1138.80" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2863c7] (9 samples, 0.08%)</title>
+<rect x = "1136.10" y="405.00" width="0.90" height="15.00" fill="rgb(241,80,31)" rx="2" ry="2"/>
+<text x="1139.10" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b540] (4 samples, 0.03%)</title>
+<rect x = "1137.00" y="389.00" width="0.40" height="15.00" fill="rgb(240,135,27)" rx="2" ry="2"/>
+<text x="1140.00" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22b541] (2 samples, 0.02%)</title>
+<rect x = "1137.40" y="389.00" width="0.20" height="15.00" fill="rgb(236,101,30)" rx="2" ry="2"/>
+<text x="1140.40" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x284d91] (4 samples, 0.03%)</title>
+<rect x = "1137.70" y="389.00" width="0.40" height="15.00" fill="rgb(206,227,53)" rx="2" ry="2"/>
+<text x="1140.70" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285c36] (3 samples, 0.03%)</title>
+<rect x = "1138.40" y="389.00" width="0.30" height="15.00" fill="rgb(230,220,41)" rx="2" ry="2"/>
+<text x="1141.40" y="401.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (2 samples, 0.02%)</title>
+<rect x = "1138.50" y="373.00" width="0.20" height="15.00" fill="rgb(239,172,31)" rx="2" ry="2"/>
+<text x="1141.50" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285c9d] (3 samples, 0.03%)</title>
+<rect x = "1138.80" y="389.00" width="0.30" height="15.00" fill="rgb(241,180,17)" rx="2" ry="2"/>
+<text x="1141.80" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285cf2] (2 samples, 0.02%)</title>
+<rect x = "1139.19" y="389.00" width="0.20" height="15.00" fill="rgb(225,212,9)" rx="2" ry="2"/>
+<text x="1142.19" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2867f0] (2 samples, 0.02%)</title>
+<rect x = "1139.69" y="373.00" width="0.20" height="15.00" fill="rgb(226,212,49)" rx="2" ry="2"/>
+<text x="1142.69" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28f920] (2 samples, 0.02%)</title>
+<rect x = "1139.89" y="373.00" width="0.20" height="15.00" fill="rgb(231,47,5)" rx="2" ry="2"/>
+<text x="1142.89" y="385.00"></text>
+</g>
+<g>
+<title>[[vdso]+0x7fb4ad289fba] (3 samples, 0.03%)</title>
+<rect x = "1140.19" y="325.00" width="0.30" height="15.00" fill="rgb(209,165,12)" rx="2" ry="2"/>
+<text x="1143.19" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28de23] (5 samples, 0.04%)</title>
+<rect x = "1140.19" y="357.00" width="0.50" height="15.00" fill="rgb(225,140,47)" rx="2" ry="2"/>
+<text x="1143.19" y="369.00"></text>
+</g>
+<g>
+<title>__clock_gettime (5 samples, 0.04%)</title>
+<rect x = "1140.19" y="341.00" width="0.50" height="15.00" fill="rgb(229,161,28)" rx="2" ry="2"/>
+<text x="1143.19" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28fa4c] (6 samples, 0.05%)</title>
+<rect x = "1140.19" y="373.00" width="0.60" height="15.00" fill="rgb(249,24,10)" rx="2" ry="2"/>
+<text x="1143.19" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28faa4] (2 samples, 0.02%)</title>
+<rect x = "1140.79" y="373.00" width="0.20" height="15.00" fill="rgb(209,2,33)" rx="2" ry="2"/>
+<text x="1143.79" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285d12] (15 samples, 0.13%)</title>
+<rect x = "1139.69" y="389.00" width="1.50" height="15.00" fill="rgb(247,168,12)" rx="2" ry="2"/>
+<text x="1142.69" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285d55] (2 samples, 0.02%)</title>
+<rect x = "1141.29" y="389.00" width="0.20" height="15.00" fill="rgb(233,155,49)" rx="2" ry="2"/>
+<text x="1144.29" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285d78] (3 samples, 0.03%)</title>
+<rect x = "1141.49" y="389.00" width="0.30" height="15.00" fill="rgb(212,125,38)" rx="2" ry="2"/>
+<text x="1144.49" y="401.00"></text>
+</g>
+<g>
+<title>__pthread_mutex_lock (2 samples, 0.02%)</title>
+<rect x = "1141.59" y="373.00" width="0.20" height="15.00" fill="rgb(207,228,0)" rx="2" ry="2"/>
+<text x="1144.59" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285e25] (6 samples, 0.05%)</title>
+<rect x = "1141.99" y="389.00" width="0.60" height="15.00" fill="rgb(251,54,40)" rx="2" ry="2"/>
+<text x="1144.99" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285e3f] (6 samples, 0.05%)</title>
+<rect x = "1142.69" y="389.00" width="0.60" height="15.00" fill="rgb(219,8,52)" rx="2" ry="2"/>
+<text x="1145.69" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285e4a] (20 samples, 0.17%)</title>
+<rect x = "1143.29" y="389.00" width="2.00" height="15.00" fill="rgb(236,50,18)" rx="2" ry="2"/>
+<text x="1146.29" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x284db7] (21 samples, 0.18%)</title>
+<rect x = "1145.58" y="373.00" width="2.10" height="15.00" fill="rgb(209,64,36)" rx="2" ry="2"/>
+<text x="1148.58" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x284dbc] (2 samples, 0.02%)</title>
+<rect x = "1147.78" y="373.00" width="0.20" height="15.00" fill="rgb(254,38,46)" rx="2" ry="2"/>
+<text x="1150.78" y="385.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x94eda] (2 samples, 0.02%)</title>
+<rect x = "1147.98" y="357.00" width="0.20" height="15.00" fill="rgb(237,133,30)" rx="2" ry="2"/>
+<text x="1150.98" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x94ee3] (2 samples, 0.02%)</title>
+<rect x = "1148.18" y="357.00" width="0.20" height="15.00" fill="rgb(212,105,13)" rx="2" ry="2"/>
+<text x="1151.18" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x94efe] (22 samples, 0.19%)</title>
+<rect x = "1148.38" y="357.00" width="2.20" height="15.00" fill="rgb(249,26,48)" rx="2" ry="2"/>
+<text x="1151.38" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x284dd2] (34 samples, 0.29%)</title>
+<rect x = "1147.98" y="373.00" width="3.39" height="15.00" fill="rgb(241,193,50)" rx="2" ry="2"/>
+<text x="1150.98" y="385.00"></text>
+</g>
+<g>
+<title>__pthread_mutex_lock (8 samples, 0.07%)</title>
+<rect x = "1150.57" y="357.00" width="0.80" height="15.00" fill="rgb(244,47,44)" rx="2" ry="2"/>
+<text x="1153.57" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x284e46] (29 samples, 0.25%)</title>
+<rect x = "1151.57" y="373.00" width="2.89" height="15.00" fill="rgb(222,166,40)" rx="2" ry="2"/>
+<text x="1154.57" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x284e58] (15 samples, 0.13%)</title>
+<rect x = "1154.77" y="373.00" width="1.50" height="15.00" fill="rgb(227,90,41)" rx="2" ry="2"/>
+<text x="1157.77" y="385.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x94f67] (26 samples, 0.22%)</title>
+<rect x = "1156.26" y="357.00" width="2.60" height="15.00" fill="rgb(251,31,21)" rx="2" ry="2"/>
+<text x="1159.26" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x284e69] (27 samples, 0.23%)</title>
+<rect x = "1156.26" y="373.00" width="2.69" height="15.00" fill="rgb(224,125,51)" rx="2" ry="2"/>
+<text x="1159.26" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x284eec] (4 samples, 0.03%)</title>
+<rect x = "1159.06" y="373.00" width="0.40" height="15.00" fill="rgb(231,145,49)" rx="2" ry="2"/>
+<text x="1162.06" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x284efa] (3 samples, 0.03%)</title>
+<rect x = "1159.46" y="373.00" width="0.30" height="15.00" fill="rgb(224,219,44)" rx="2" ry="2"/>
+<text x="1162.46" y="385.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x94f67] (5 samples, 0.04%)</title>
+<rect x = "1159.76" y="357.00" width="0.50" height="15.00" fill="rgb(231,206,22)" rx="2" ry="2"/>
+<text x="1162.76" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x9d3bc] (3 samples, 0.03%)</title>
+<rect x = "1160.26" y="357.00" width="0.30" height="15.00" fill="rgb(234,180,13)" rx="2" ry="2"/>
+<text x="1163.26" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x284f21] (9 samples, 0.08%)</title>
+<rect x = "1159.76" y="373.00" width="0.90" height="15.00" fill="rgb(225,28,8)" rx="2" ry="2"/>
+<text x="1162.76" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28503a] (9 samples, 0.08%)</title>
+<rect x = "1160.65" y="373.00" width="0.90" height="15.00" fill="rgb(220,158,31)" rx="2" ry="2"/>
+<text x="1163.65" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285043] (2 samples, 0.02%)</title>
+<rect x = "1161.55" y="373.00" width="0.20" height="15.00" fill="rgb(246,125,7)" rx="2" ry="2"/>
+<text x="1164.55" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285e7a] (172 samples, 1.45%)</title>
+<rect x = "1145.38" y="389.00" width="17.17" height="15.00" fill="rgb(227,109,39)" rx="2" ry="2"/>
+<text x="1148.38" y="401.00"></text>
+</g>
+<g>
+<title>__pthread_mutex_lock (7 samples, 0.06%)</title>
+<rect x = "1161.85" y="373.00" width="0.70" height="15.00" fill="rgb(218,45,0)" rx="2" ry="2"/>
+<text x="1164.85" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2873ec] (2 samples, 0.02%)</title>
+<rect x = "1162.65" y="373.00" width="0.20" height="15.00" fill="rgb(239,207,23)" rx="2" ry="2"/>
+<text x="1165.65" y="385.00"></text>
+</g>
+<g>
+<title>pthread_mutex_trylock (2 samples, 0.02%)</title>
+<rect x = "1162.65" y="357.00" width="0.20" height="15.00" fill="rgb(215,65,25)" rx="2" ry="2"/>
+<text x="1165.65" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285ea0] (10 samples, 0.08%)</title>
+<rect x = "1162.55" y="389.00" width="1.00" height="15.00" fill="rgb(242,104,4)" rx="2" ry="2"/>
+<text x="1165.55" y="401.00"></text>
+</g>
+<g>
+<title>pthread_mutex_trylock (4 samples, 0.03%)</title>
+<rect x = "1163.15" y="373.00" width="0.40" height="15.00" fill="rgb(223,32,35)" rx="2" ry="2"/>
+<text x="1166.15" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2856a4] (2 samples, 0.02%)</title>
+<rect x = "1163.65" y="373.00" width="0.20" height="15.00" fill="rgb(250,81,7)" rx="2" ry="2"/>
+<text x="1166.65" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2856c2] (7 samples, 0.06%)</title>
+<rect x = "1164.15" y="373.00" width="0.70" height="15.00" fill="rgb(253,211,26)" rx="2" ry="2"/>
+<text x="1167.15" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2856c8] (2 samples, 0.02%)</title>
+<rect x = "1164.85" y="373.00" width="0.20" height="15.00" fill="rgb(244,219,19)" rx="2" ry="2"/>
+<text x="1167.85" y="385.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fc80] (2 samples, 0.02%)</title>
+<rect x = "1165.25" y="357.00" width="0.20" height="15.00" fill="rgb(222,200,16)" rx="2" ry="2"/>
+<text x="1168.25" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fc84] (2 samples, 0.02%)</title>
+<rect x = "1165.45" y="357.00" width="0.20" height="15.00" fill="rgb(234,14,15)" rx="2" ry="2"/>
+<text x="1168.45" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fcc7] (2 samples, 0.02%)</title>
+<rect x = "1165.65" y="357.00" width="0.20" height="15.00" fill="rgb(248,227,42)" rx="2" ry="2"/>
+<text x="1168.65" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fccf] (2 samples, 0.02%)</title>
+<rect x = "1165.85" y="357.00" width="0.20" height="15.00" fill="rgb(245,4,19)" rx="2" ry="2"/>
+<text x="1168.85" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fd07] (2 samples, 0.02%)</title>
+<rect x = "1166.14" y="357.00" width="0.20" height="15.00" fill="rgb(228,196,24)" rx="2" ry="2"/>
+<text x="1169.14" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fd15] (3 samples, 0.03%)</title>
+<rect x = "1166.34" y="357.00" width="0.30" height="15.00" fill="rgb(250,153,35)" rx="2" ry="2"/>
+<text x="1169.34" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fd1c] (4 samples, 0.03%)</title>
+<rect x = "1166.64" y="357.00" width="0.40" height="15.00" fill="rgb(239,42,27)" rx="2" ry="2"/>
+<text x="1169.64" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fd36] (2 samples, 0.02%)</title>
+<rect x = "1167.14" y="357.00" width="0.20" height="15.00" fill="rgb(206,197,1)" rx="2" ry="2"/>
+<text x="1170.14" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0x18fd3d] (3 samples, 0.03%)</title>
+<rect x = "1167.34" y="357.00" width="0.30" height="15.00" fill="rgb(244,88,17)" rx="2" ry="2"/>
+<text x="1170.34" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2851b1] (9 samples, 0.08%)</title>
+<rect x = "1167.84" y="357.00" width="0.90" height="15.00" fill="rgb(242,39,46)" rx="2" ry="2"/>
+<text x="1170.84" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2851b8] (2 samples, 0.02%)</title>
+<rect x = "1168.74" y="357.00" width="0.20" height="15.00" fill="rgb(238,196,9)" rx="2" ry="2"/>
+<text x="1171.74" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2851ba] (2 samples, 0.02%)</title>
+<rect x = "1168.94" y="357.00" width="0.20" height="15.00" fill="rgb(249,35,13)" rx="2" ry="2"/>
+<text x="1171.94" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2856e4] (41 samples, 0.35%)</title>
+<rect x = "1165.25" y="373.00" width="4.09" height="15.00" fill="rgb(251,140,33)" rx="2" ry="2"/>
+<text x="1168.25" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28f920] (3 samples, 0.03%)</title>
+<rect x = "1169.64" y="357.00" width="0.30" height="15.00" fill="rgb(238,82,47)" rx="2" ry="2"/>
+<text x="1172.64" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28de23] (5 samples, 0.04%)</title>
+<rect x = "1170.24" y="341.00" width="0.50" height="15.00" fill="rgb(235,218,25)" rx="2" ry="2"/>
+<text x="1173.24" y="353.00"></text>
+</g>
+<g>
+<title>__clock_gettime (4 samples, 0.03%)</title>
+<rect x = "1170.34" y="325.00" width="0.40" height="15.00" fill="rgb(214,133,44)" rx="2" ry="2"/>
+<text x="1173.34" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285723] (14 samples, 0.12%)</title>
+<rect x = "1169.44" y="373.00" width="1.40" height="15.00" fill="rgb(252,180,53)" rx="2" ry="2"/>
+<text x="1172.44" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28fa4c] (6 samples, 0.05%)</title>
+<rect x = "1170.24" y="357.00" width="0.60" height="15.00" fill="rgb(219,201,32)" rx="2" ry="2"/>
+<text x="1173.24" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2857ea] (2 samples, 0.02%)</title>
+<rect x = "1171.04" y="373.00" width="0.20" height="15.00" fill="rgb(250,182,37)" rx="2" ry="2"/>
+<text x="1174.04" y="385.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0xa0952] (3 samples, 0.03%)</title>
+<rect x = "1171.33" y="325.00" width="0.30" height="15.00" fill="rgb(215,151,21)" rx="2" ry="2"/>
+<text x="1174.33" y="337.00"></text>
+</g>
+<g>
+<title>__nanosleep (4 samples, 0.03%)</title>
+<rect x = "1171.33" y="341.00" width="0.40" height="15.00" fill="rgb(228,134,2)" rx="2" ry="2"/>
+<text x="1174.33" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2857f9] (8 samples, 0.07%)</title>
+<rect x = "1171.23" y="373.00" width="0.80" height="15.00" fill="rgb(234,60,29)" rx="2" ry="2"/>
+<text x="1174.23" y="385.00"></text>
+</g>
+<g>
+<title>usleep (7 samples, 0.06%)</title>
+<rect x = "1171.33" y="357.00" width="0.70" height="15.00" fill="rgb(253,136,31)" rx="2" ry="2"/>
+<text x="1174.33" y="369.00"></text>
+</g>
+<g>
+<title>clock_nanosleep (3 samples, 0.03%)</title>
+<rect x = "1171.73" y="341.00" width="0.30" height="15.00" fill="rgb(253,212,51)" rx="2" ry="2"/>
+<text x="1174.73" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285f34] (87 samples, 0.74%)</title>
+<rect x = "1163.55" y="389.00" width="8.68" height="15.00" fill="rgb(217,132,14)" rx="2" ry="2"/>
+<text x="1166.55" y="401.00"></text>
+</g>
+<g>
+<title>rand_r (2 samples, 0.02%)</title>
+<rect x = "1172.03" y="373.00" width="0.20" height="15.00" fill="rgb(207,191,29)" rx="2" ry="2"/>
+<text x="1175.03" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285529] (6 samples, 0.05%)</title>
+<rect x = "1172.43" y="373.00" width="0.60" height="15.00" fill="rgb(211,200,4)" rx="2" ry="2"/>
+<text x="1175.43" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28552f] (2 samples, 0.02%)</title>
+<rect x = "1173.03" y="373.00" width="0.20" height="15.00" fill="rgb(251,25,3)" rx="2" ry="2"/>
+<text x="1176.03" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285537] (3 samples, 0.03%)</title>
+<rect x = "1173.23" y="373.00" width="0.30" height="15.00" fill="rgb(221,142,32)" rx="2" ry="2"/>
+<text x="1176.23" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d1f3] (2 samples, 0.02%)</title>
+<rect x = "1174.13" y="357.00" width="0.20" height="15.00" fill="rgb(218,74,9)" rx="2" ry="2"/>
+<text x="1177.13" y="369.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0xa07d1] (2 samples, 0.02%)</title>
+<rect x = "1174.33" y="341.00" width="0.20" height="15.00" fill="rgb(237,40,35)" rx="2" ry="2"/>
+<text x="1177.33" y="353.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0xa07fa] (2 samples, 0.02%)</title>
+<rect x = "1174.53" y="325.00" width="0.20" height="15.00" fill="rgb(239,9,31)" rx="2" ry="2"/>
+<text x="1177.53" y="337.00"></text>
+</g>
+<g>
+<title>[libc.so.6+0xa0860] (2 samples, 0.02%)</title>
+<rect x = "1174.73" y="325.00" width="0.20" height="15.00" fill="rgb(211,227,52)" rx="2" ry="2"/>
+<text x="1177.73" y="337.00"></text>
+</g>
+<g>
+<title>_pthread_cleanup_push (3 samples, 0.03%)</title>
+<rect x = "1174.93" y="325.00" width="0.30" height="15.00" fill="rgb(244,167,19)" rx="2" ry="2"/>
+<text x="1177.93" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28ca12] (9 samples, 0.08%)</title>
+<rect x = "1174.53" y="341.00" width="0.90" height="15.00" fill="rgb(230,29,48)" rx="2" ry="2"/>
+<text x="1177.53" y="353.00"></text>
+</g>
+<g>
+<title>pthread_testcancel (2 samples, 0.02%)</title>
+<rect x = "1175.23" y="325.00" width="0.20" height="15.00" fill="rgb(244,142,25)" rx="2" ry="2"/>
+<text x="1178.23" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d1fb] (13 samples, 0.11%)</title>
+<rect x = "1174.33" y="357.00" width="1.30" height="15.00" fill="rgb(234,100,42)" rx="2" ry="2"/>
+<text x="1177.33" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285f51] (38 samples, 0.32%)</title>
+<rect x = "1172.23" y="389.00" width="3.79" height="15.00" fill="rgb(235,177,44)" rx="2" ry="2"/>
+<text x="1175.23" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2855a6] (24 samples, 0.20%)</title>
+<rect x = "1173.63" y="373.00" width="2.40" height="15.00" fill="rgb(248,143,32)" rx="2" ry="2"/>
+<text x="1176.63" y="385.00"></text>
+</g>
+<g>
+<title>__pthread_mutex_lock (4 samples, 0.03%)</title>
+<rect x = "1175.63" y="357.00" width="0.40" height="15.00" fill="rgb(216,218,38)" rx="2" ry="2"/>
+<text x="1178.63" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285f9b] (5 samples, 0.04%)</title>
+<rect x = "1176.03" y="389.00" width="0.50" height="15.00" fill="rgb(227,80,13)" rx="2" ry="2"/>
+<text x="1179.03" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x285fc5] (7 samples, 0.06%)</title>
+<rect x = "1176.53" y="389.00" width="0.70" height="15.00" fill="rgb(212,57,8)" rx="2" ry="2"/>
+<text x="1179.53" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2860a4] (4 samples, 0.03%)</title>
+<rect x = "1177.72" y="389.00" width="0.40" height="15.00" fill="rgb(218,85,22)" rx="2" ry="2"/>
+<text x="1180.72" y="401.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (4 samples, 0.03%)</title>
+<rect x = "1177.72" y="373.00" width="0.40" height="15.00" fill="rgb(243,74,35)" rx="2" ry="2"/>
+<text x="1180.72" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2860a8] (2 samples, 0.02%)</title>
+<rect x = "1178.12" y="389.00" width="0.20" height="15.00" fill="rgb(219,10,24)" rx="2" ry="2"/>
+<text x="1181.12" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2860d0] (3 samples, 0.03%)</title>
+<rect x = "1178.32" y="389.00" width="0.30" height="15.00" fill="rgb(228,11,16)" rx="2" ry="2"/>
+<text x="1181.32" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2860d4] (2 samples, 0.02%)</title>
+<rect x = "1178.62" y="389.00" width="0.20" height="15.00" fill="rgb(230,80,42)" rx="2" ry="2"/>
+<text x="1181.62" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x286495] (420 samples, 3.55%)</title>
+<rect x = "1137.00" y="405.00" width="41.92" height="15.00" fill="rgb(222,103,31)" rx="2" ry="2"/>
+<text x="1140.00" y="417.00">[li..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2864e5] (2 samples, 0.02%)</title>
+<rect x = "1179.32" y="405.00" width="0.20" height="15.00" fill="rgb(222,16,29)" rx="2" ry="2"/>
+<text x="1182.32" y="417.00"></text>
+</g>
+<g>
+<title>__tls_get_addr (2 samples, 0.02%)</title>
+<rect x = "1179.32" y="389.00" width="0.20" height="15.00" fill="rgb(226,169,34)" rx="2" ry="2"/>
+<text x="1182.32" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2864f3] (8 samples, 0.07%)</title>
+<rect x = "1179.52" y="405.00" width="0.80" height="15.00" fill="rgb(244,121,27)" rx="2" ry="2"/>
+<text x="1182.52" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x231b74] (8 samples, 0.07%)</title>
+<rect x = "1179.52" y="389.00" width="0.80" height="15.00" fill="rgb(205,41,9)" rx="2" ry="2"/>
+<text x="1182.52" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x286506] (22 samples, 0.19%)</title>
+<rect x = "1180.32" y="405.00" width="2.20" height="15.00" fill="rgb(233,184,39)" rx="2" ry="2"/>
+<text x="1183.32" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28650d] (5 samples, 0.04%)</title>
+<rect x = "1182.51" y="405.00" width="0.50" height="15.00" fill="rgb(232,164,25)" rx="2" ry="2"/>
+<text x="1185.51" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20cee8] (2 samples, 0.02%)</title>
+<rect x = "1183.81" y="261.00" width="0.20" height="15.00" fill="rgb(247,159,45)" rx="2" ry="2"/>
+<text x="1186.81" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20cf57] (5 samples, 0.04%)</title>
+<rect x = "1184.21" y="261.00" width="0.50" height="15.00" fill="rgb(244,202,19)" rx="2" ry="2"/>
+<text x="1187.21" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x267a94] (2 samples, 0.02%)</title>
+<rect x = "1184.51" y="245.00" width="0.20" height="15.00" fill="rgb(220,157,1)" rx="2" ry="2"/>
+<text x="1187.51" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262280] (15 samples, 0.13%)</title>
+<rect x = "1183.51" y="293.00" width="1.50" height="15.00" fill="rgb(239,126,39)" rx="2" ry="2"/>
+<text x="1186.51" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c4d0] (13 samples, 0.11%)</title>
+<rect x = "1183.71" y="277.00" width="1.30" height="15.00" fill="rgb(245,3,13)" rx="2" ry="2"/>
+<text x="1186.71" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20dd4e] (3 samples, 0.03%)</title>
+<rect x = "1185.01" y="245.00" width="0.30" height="15.00" fill="rgb(206,194,22)" rx="2" ry="2"/>
+<text x="1188.01" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20ccbb] (2 samples, 0.02%)</title>
+<rect x = "1185.11" y="229.00" width="0.20" height="15.00" fill="rgb(236,216,51)" rx="2" ry="2"/>
+<text x="1188.11" y="241.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c58f] (5 samples, 0.04%)</title>
+<rect x = "1185.01" y="277.00" width="0.50" height="15.00" fill="rgb(220,206,24)" rx="2" ry="2"/>
+<text x="1188.01" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20dbc1] (5 samples, 0.04%)</title>
+<rect x = "1185.01" y="261.00" width="0.50" height="15.00" fill="rgb(239,76,53)" rx="2" ry="2"/>
+<text x="1188.01" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262296] (7 samples, 0.06%)</title>
+<rect x = "1185.01" y="293.00" width="0.70" height="15.00" fill="rgb(205,53,43)" rx="2" ry="2"/>
+<text x="1188.01" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c8e9] (2 samples, 0.02%)</title>
+<rect x = "1185.51" y="277.00" width="0.20" height="15.00" fill="rgb(205,208,54)" rx="2" ry="2"/>
+<text x="1188.51" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20dd4e] (2 samples, 0.02%)</title>
+<rect x = "1185.51" y="261.00" width="0.20" height="15.00" fill="rgb(218,207,51)" rx="2" ry="2"/>
+<text x="1188.51" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26229a] (2 samples, 0.02%)</title>
+<rect x = "1185.71" y="293.00" width="0.20" height="15.00" fill="rgb(232,94,20)" rx="2" ry="2"/>
+<text x="1188.71" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x261ff6] (26 samples, 0.22%)</title>
+<rect x = "1183.51" y="309.00" width="2.60" height="15.00" fill="rgb(228,69,16)" rx="2" ry="2"/>
+<text x="1186.51" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2622bb] (2 samples, 0.02%)</title>
+<rect x = "1185.91" y="293.00" width="0.20" height="15.00" fill="rgb(238,111,30)" rx="2" ry="2"/>
+<text x="1188.91" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2678d9] (2 samples, 0.02%)</title>
+<rect x = "1185.91" y="277.00" width="0.20" height="15.00" fill="rgb(206,3,11)" rx="2" ry="2"/>
+<text x="1188.91" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22d9c6] (2 samples, 0.02%)</title>
+<rect x = "1186.11" y="261.00" width="0.20" height="15.00" fill="rgb(245,226,54)" rx="2" ry="2"/>
+<text x="1189.11" y="273.00"></text>
+</g>
+<g>
+<title>operator new(unsigned long) (2 samples, 0.02%)</title>
+<rect x = "1186.11" y="245.00" width="0.20" height="15.00" fill="rgb(228,171,20)" rx="2" ry="2"/>
+<text x="1189.11" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x24122a] (3 samples, 0.03%)</title>
+<rect x = "1186.11" y="293.00" width="0.30" height="15.00" fill="rgb(212,27,43)" rx="2" ry="2"/>
+<text x="1189.11" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x24156c] (3 samples, 0.03%)</title>
+<rect x = "1186.11" y="277.00" width="0.30" height="15.00" fill="rgb(213,207,49)" rx="2" ry="2"/>
+<text x="1189.11" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262032] (5 samples, 0.04%)</title>
+<rect x = "1186.11" y="309.00" width="0.50" height="15.00" fill="rgb(218,129,17)" rx="2" ry="2"/>
+<text x="1189.11" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x241369] (2 samples, 0.02%)</title>
+<rect x = "1186.41" y="293.00" width="0.20" height="15.00" fill="rgb(242,132,1)" rx="2" ry="2"/>
+<text x="1189.41" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262417] (2 samples, 0.02%)</title>
+<rect x = "1186.61" y="293.00" width="0.20" height="15.00" fill="rgb(210,31,30)" rx="2" ry="2"/>
+<text x="1189.61" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22d0f6] (34 samples, 0.29%)</title>
+<rect x = "1183.51" y="373.00" width="3.39" height="15.00" fill="rgb(245,5,11)" rx="2" ry="2"/>
+<text x="1186.51" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22c2d6] (34 samples, 0.29%)</title>
+<rect x = "1183.51" y="357.00" width="3.39" height="15.00" fill="rgb(218,190,43)" rx="2" ry="2"/>
+<text x="1186.51" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20b943] (34 samples, 0.29%)</title>
+<rect x = "1183.51" y="341.00" width="3.39" height="15.00" fill="rgb(245,143,18)" rx="2" ry="2"/>
+<text x="1186.51" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23eab5] (34 samples, 0.29%)</title>
+<rect x = "1183.51" y="325.00" width="3.39" height="15.00" fill="rgb(247,33,26)" rx="2" ry="2"/>
+<text x="1186.51" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26204b] (3 samples, 0.03%)</title>
+<rect x = "1186.61" y="309.00" width="0.30" height="15.00" fill="rgb(216,149,39)" rx="2" ry="2"/>
+<text x="1189.61" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262b50] (5 samples, 0.04%)</title>
+<rect x = "1187.40" y="293.00" width="0.50" height="15.00" fill="rgb(254,168,11)" rx="2" ry="2"/>
+<text x="1190.40" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c4d0] (4 samples, 0.03%)</title>
+<rect x = "1187.50" y="277.00" width="0.40" height="15.00" fill="rgb(239,46,10)" rx="2" ry="2"/>
+<text x="1190.50" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20cf57] (3 samples, 0.03%)</title>
+<rect x = "1187.60" y="261.00" width="0.30" height="15.00" fill="rgb(248,211,6)" rx="2" ry="2"/>
+<text x="1190.60" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20dbc1] (4 samples, 0.03%)</title>
+<rect x = "1187.90" y="261.00" width="0.40" height="15.00" fill="rgb(227,98,46)" rx="2" ry="2"/>
+<text x="1190.90" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20dd4e] (3 samples, 0.03%)</title>
+<rect x = "1188.00" y="245.00" width="0.30" height="15.00" fill="rgb(213,75,37)" rx="2" ry="2"/>
+<text x="1191.00" y="257.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c58f] (5 samples, 0.04%)</title>
+<rect x = "1187.90" y="277.00" width="0.50" height="15.00" fill="rgb(226,167,24)" rx="2" ry="2"/>
+<text x="1190.90" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20dd4e] (2 samples, 0.02%)</title>
+<rect x = "1188.40" y="261.00" width="0.20" height="15.00" fill="rgb(249,41,4)" rx="2" ry="2"/>
+<text x="1191.40" y="273.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20c8e9] (4 samples, 0.03%)</title>
+<rect x = "1188.40" y="277.00" width="0.40" height="15.00" fill="rgb(222,61,32)" rx="2" ry="2"/>
+<text x="1191.40" y="289.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x262b66] (13 samples, 0.11%)</title>
+<rect x = "1187.90" y="293.00" width="1.30" height="15.00" fill="rgb(252,193,8)" rx="2" ry="2"/>
+<text x="1190.90" y="305.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x26262d] (19 samples, 0.16%)</title>
+<rect x = "1187.40" y="309.00" width="1.90" height="15.00" fill="rgb(218,227,24)" rx="2" ry="2"/>
+<text x="1190.40" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x20ba4b] (23 samples, 0.19%)</title>
+<rect x = "1187.21" y="341.00" width="2.30" height="15.00" fill="rgb(239,6,7)" rx="2" ry="2"/>
+<text x="1190.21" y="353.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x23ebfc] (21 samples, 0.18%)</title>
+<rect x = "1187.40" y="325.00" width="2.10" height="15.00" fill="rgb(245,2,41)" rx="2" ry="2"/>
+<text x="1190.40" y="337.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x2626b7] (2 samples, 0.02%)</title>
+<rect x = "1189.30" y="309.00" width="0.20" height="15.00" fill="rgb(242,6,2)" rx="2" ry="2"/>
+<text x="1192.30" y="321.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22c1df] (62 samples, 0.52%)</title>
+<rect x = "1183.41" y="389.00" width="6.19" height="15.00" fill="rgb(229,28,43)" rx="2" ry="2"/>
+<text x="1186.41" y="401.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22d3b3] (26 samples, 0.22%)</title>
+<rect x = "1187.01" y="373.00" width="2.60" height="15.00" fill="rgb(220,179,48)" rx="2" ry="2"/>
+<text x="1190.01" y="385.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x22c3ef] (26 samples, 0.22%)</title>
+<rect x = "1187.01" y="357.00" width="2.60" height="15.00" fill="rgb(244,92,26)" rx="2" ry="2"/>
+<text x="1190.01" y="369.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x282baa] (589 samples, 4.98%)</title>
+<rect x = "1130.91" y="421.00" width="58.79" height="15.00" fill="rgb(224,66,47)" rx="2" ry="2"/>
+<text x="1133.91" y="433.00">[libca..</text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x286592] (63 samples, 0.53%)</title>
+<rect x = "1183.41" y="405.00" width="6.29" height="15.00" fill="rgb(243,116,5)" rx="2" ry="2"/>
+<text x="1186.41" y="417.00"></text>
+</g>
+<g>
+<title>[libcangjie-runtime.so+0x28d465] (2 samples, 0.02%)</title>
+<rect x = "1189.80" y="421.00" width="0.20" height="15.00" fill="rgb(208,145,36)" rx="2" ry="2"/>
+<text x="1192.80" y="433.00"></text>
+</g>
+<g>
+<title>all (11822 samples, 100.00%)</title>
+<rect x = "10.00" y="437.00" width="1180.00" height="15.00" fill="rgb(208,151,28)" rx="2" ry="2"/>
+<text x="13.00" y="449.00">all</text>
+</g>
+</g>
+</svg>
